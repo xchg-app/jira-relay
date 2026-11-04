@@ -43,6 +43,7 @@ jobs:
         run: tools/publish.sh "${{ matrix.harness }}" "${{ steps.v.outputs.version }}"
 
   # The changelog is the body of the annotated tag (everything after its first line): the GitHub
+  # release of this repository carries it. Package repositories get no releases.
   changelog:
     runs-on: ubuntu-latest
     needs: publish
