@@ -1,0 +1,3 @@
+# Host keys pinned for well-known hubs. Others: jira-relay outbound hostkey NAME < known_hosts
+xchg.app ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOPqY35DgypozOOVlBTZFLxIo4ix1EB01L5cgK76UI9P
+github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl

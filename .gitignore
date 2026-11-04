@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.codemap.tags
+.secrets/
+.env
+compose.override.yaml

@@ -1,0 +1,153 @@
+#!/usr/bin/env python3
+"""jira-relay release: bin/release X.Y.Z [--dry-run] | bin/release --publish X.Y.Z
+
+1. Checks: branch main, clean working tree, main = origin/main, no such tag yet, version greater than the current one,
+   tests pass, the "Unreleased" section of CHANGELOG.md is not empty, `gh` is logged in.
+2. Version goes into jira_relay/__init__.py, plugin/bin/jira and plugin/.claude-plugin/plugin.json (Claude Code
+   updates the plugin by it); "Unreleased" -> "[X.Y.Z] — date"; commit "Release X.Y.Z", annotated tag vX.Y.Z with the
+   section text; push main and the tag.
+3. GitHub Release (`gh release create`) with the same text.
+
+--publish X.Y.Z runs only step 3 for an already pushed tag (if GitHub did not answer the first time).
+"""
+import argparse
+import json
+import re
+import subprocess
+import sys
+from datetime import date
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+CHANGELOG = ROOT / 'CHANGELOG.md'
+VERSION_FILES = {
+    ROOT / 'jira_relay' / '__init__.py': re.compile(r"^(__version__ = ')([^']+)(')", re.M),
+    ROOT / 'plugin' / 'bin' / 'jira': re.compile(r"^(VERSION = ')([^']+)(')", re.M),
+    ROOT / 'plugin' / '.claude-plugin' / 'plugin.json': re.compile(r'^(  "version": ")([^"]+)(")', re.M),
+}
+UNRELEASED = '## [Unreleased]'
+SEMVER = re.compile(r'^\d+\.\d+\.\d+$')
+
+
+class ReleaseError(Exception):
+    pass
+
+
+def git(*args: str, capture: bool = True) -> str:
+    done = subprocess.run(['git', *args], cwd=ROOT, text=True, capture_output=capture)
+    if done.returncode:
+        raise ReleaseError(f'git {" ".join(args)}: {(done.stderr or "").strip() or done.returncode}')
+    return (done.stdout or '').strip()
+
+
+def parse(version: str) -> tuple[int, ...]:
+    return tuple(int(p) for p in version.split('.'))
+
+
+def current_version() -> str:
+    path, pattern = next(iter(VERSION_FILES.items()))
+    return pattern.search(path.read_text()).group(2)
+
+
+def unreleased_section(text: str) -> str:
+    start = text.find(UNRELEASED)
+    if start < 0:
+        raise ReleaseError(f'CHANGELOG.md has no "{UNRELEASED}" section')
+    body_start = start + len(UNRELEASED)
+    end = text.find('\n## ', body_start)
+    return text[body_start:end if end >= 0 else len(text)].strip()
+
+
+def version_section(text: str, version: str) -> str:
+    match = re.search(rf'^## \[{re.escape(version)}\][^\n]*\n(.*?)(?=^## |\Z)', text, re.M | re.S)
+    if not match:
+        raise ReleaseError(f'CHANGELOG.md has no [{version}] section')
+    return match.group(1).strip()
+
+
+def check(version: str) -> str:
+    if not SEMVER.match(version):
+        raise ReleaseError(f'"{version}" is not X.Y.Z')
+    if git('rev-parse', '--abbrev-ref', 'HEAD') != 'main':
+        raise ReleaseError('releases are made from the main branch only')
+    if git('status', '--porcelain'):
+        raise ReleaseError('working tree is not clean: commit or drop the changes')
+    git('fetch', '--quiet', '--tags', 'origin')
+    if git('rev-parse', 'HEAD') != git('rev-parse', 'origin/main'):
+        raise ReleaseError('main differs from origin/main: pull or push first')
+    if git('tag', '--list', f'v{version}'):
+        raise ReleaseError(f'tag v{version} already exists')
+    current = current_version()
+    if parse(version) <= parse(current):
+        raise ReleaseError(f'{version} is not greater than the current {current}')
+    notes = unreleased_section(CHANGELOG.read_text())
+    if not notes:
+        raise ReleaseError(f'the "{UNRELEASED}" section of CHANGELOG.md is empty: describe what goes into the release')
+    tests = subprocess.run([sys.executable, '-m', 'unittest', 'discover', '-s', 'tests', '-t', '.', '-q'],
+                           cwd=ROOT, capture_output=True, text=True)
+    if tests.returncode:
+        raise ReleaseError(f'tests failed:\n{tests.stderr[-2000:]}')
+    return notes
+
+
+def bump(version: str) -> None:
+    for path, pattern in VERSION_FILES.items():
+        text, n = pattern.subn(rf'\g<1>{version}\g<3>', path.read_text())
+        if n != 1:
+            raise ReleaseError(f'{path.relative_to(ROOT)}: version line not found')
+        path.write_text(text)
+    text = CHANGELOG.read_text()
+    CHANGELOG.write_text(text.replace(UNRELEASED, f'{UNRELEASED}\n\n## [{version}] — {date.today().isoformat()}', 1))
+
+
+def publish(version: str, notes: str) -> str:
+    done = subprocess.run(['gh', 'release', 'create', f'v{version}', '--verify-tag', '--title', f'jira-relay {version}',
+                           '--notes', notes], cwd=ROOT, capture_output=True, text=True)
+    if done.returncode:
+        raise ReleaseError(f'GitHub did not create the Release: {done.stderr.strip()[-300:]}. '
+                           f'Retry: bin/release --publish {version}')
+    return done.stdout.strip()
+
+
+def gh_ready() -> None:
+    if subprocess.run(['gh', 'auth', 'status'], capture_output=True).returncode:
+        raise ReleaseError('gh is not logged in: gh auth login')
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(prog='bin/release', description='jira-relay release: version, tag, GitHub Release')
+    parser.add_argument('version', help='X.Y.Z')
+    parser.add_argument('--dry-run', action='store_true', help='only checks and the release text, change nothing')
+    parser.add_argument('--publish', action='store_true', help='only the GitHub Release for an already pushed tag')
+    args = parser.parse_args()
+    try:
+        if args.publish:
+            gh_ready()
+            git('fetch', '--quiet', '--tags', 'origin')
+            if not git('tag', '--list', f'v{args.version}'):
+                raise ReleaseError(f'tag v{args.version} does not exist')
+            notes = version_section(git('show', f'v{args.version}:CHANGELOG.md'), args.version)
+            print(publish(args.version, notes))
+            return 0
+
+        notes = check(args.version)
+        gh_ready()
+        print(f'jira-relay {current_version()} → {args.version}\n\n{notes}\n')
+        if args.dry_run:
+            print('dry-run: nothing changed')
+            return 0
+        bump(args.version)
+        git('add', '-A')
+        git('commit', '-q', '-m', f'Release {args.version}')
+        git('tag', '-a', f'v{args.version}', '-m', f'jira-relay {args.version}\n\n{notes}')
+        git('push', '--quiet', 'origin', 'main', f'v{args.version}', capture=False)
+        print(f'tag v{args.version} pushed')
+        print(publish(args.version, notes))
+        return 0
+    except ReleaseError as e:
+        print(f'release: {e}', file=sys.stderr)
+        return 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())

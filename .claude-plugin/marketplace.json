@@ -1,0 +1,20 @@
+{
+  "name": "jira-relay",
+  "owner": {
+    "name": "xchg-app",
+    "url": "https://github.com/xchg-app"
+  },
+  "description": "Jira for coding agents through a self-hosted jira-relay service",
+  "plugins": [
+    {
+      "name": "jira-relay",
+      "displayName": "jira-relay",
+      "source": "./plugin",
+      "description": "Jira Server/DC for coding agents through a jira-relay service: read freely, change on your human's command, watch issues into xchg hubs.",
+      "category": "productivity",
+      "keywords": ["jira", "agents", "xchg", "issue-tracking"],
+      "homepage": "https://github.com/xchg-app/jira-relay",
+      "repository": "https://github.com/xchg-app/jira-relay"
+    }
+  ]
+}

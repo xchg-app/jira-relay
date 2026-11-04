@@ -1,0 +1,37 @@
+name: jira-relay
+
+# Everything about the installation (Jira sites, outbounds, users) lives in the data volume: /data/config/jira-relay.toml
+# and /data/secrets, managed with `docker compose exec jira-relay jira-relay jira|outbound|user ...`.
+# Host-specific build and runtime values go to .env next to this file (see README "Install"):
+#   JIRA_RELAY_VOLUME  data volume name (default jira-relay_data)
+#   APP_UID, APP_GID   uid/gid of the service process and of /data
+#   ALPINE_MIRROR      apk mirror when the default one is slow or unreachable
+#   BOT_NAME, BOT_EMAIL  git author of the bot's commits in xchg hubs
+services:
+  jira-relay:
+    build:
+      context: .
+      args:
+        APP_UID: ${APP_UID:-1000}
+        APP_GID: ${APP_GID:-1000}
+        ALPINE_MIRROR: ${ALPINE_MIRROR:-}
+    image: jira-relay:local
+    init: true  # PID 1 is tini: SIGTERM reaches python, docker stop does not wait 10 s
+    restart: unless-stopped
+    command: ["jira-relay", "run"]
+    environment:
+      GIT_AUTHOR_NAME: ${BOT_NAME:-jira-bot}
+      GIT_AUTHOR_EMAIL: ${BOT_EMAIL:-jira-bot@localhost}
+      GIT_COMMITTER_NAME: ${BOT_NAME:-jira-bot}
+      GIT_COMMITTER_EMAIL: ${BOT_EMAIL:-jira-bot@localhost}
+    volumes:
+      - data:/data
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+volumes:
+  data:
+    name: ${JIRA_RELAY_VOLUME:-jira-relay_data}

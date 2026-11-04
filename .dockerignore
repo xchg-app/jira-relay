@@ -1,0 +1,10 @@
+.git
+.secrets
+.claude-docs
+docs
+tests
+**/__pycache__
+*.pyc
+.codemap.tags
+plugin
+.env

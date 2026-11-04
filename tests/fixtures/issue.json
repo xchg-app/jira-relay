@@ -1,0 +1,50 @@
+{
+  "key": "DEMO-42",
+  "fields": {
+    "summary": "Export  report | to CSV",
+    "issuetype": {"name": "Story"},
+    "status": {"name": "In Progress"},
+    "resolution": null,
+    "priority": {"name": "Medium"},
+    "assignee": {"name": "bob", "displayName": "Bob Brown"},
+    "reporter": {"name": "alice", "displayName": "Alice Adams"},
+    "description": "h3. Scope\n# first item\n{code}\n```already fenced```\n{code}",
+    "parent": {"key": "DEMO-1", "fields": {"summary": "Reports", "status": {"name": "To Do"}}},
+    "fixVersions": [{"name": "2026.10"}, {"name": "2026.09"}],
+    "created": "2026-09-02T08:50:50.094+0000",
+    "updated": "2026-09-03T14:53:16.406+0000",
+    "issuelinks": [
+      {"id": "2", "type": {"name": "Blocks", "inward": "is blocked by", "outward": "blocks"},
+       "outwardIssue": {"key": "DEMO-45", "fields": {"summary": "Import report", "status": {"name": "To Do"}}}},
+      {"id": "1", "type": {"name": "Relates", "inward": "relates to", "outward": "relates to"},
+       "inwardIssue": {"key": "DEMO-46", "fields": {"summary": "Report styles", "status": {"name": "Done"}}}}
+    ],
+    "subtasks": [
+      {"key": "DEMO-44", "fields": {"summary": "Second step", "status": {"name": "To Do"}}},
+      {"key": "DEMO-43", "fields": {"summary": "First step", "status": {"name": "Done"}}}
+    ],
+    "attachment": [
+      {"id": "72196", "filename": "spec.pdf", "size": 23911, "created": "2026-09-03T14:19:14.316+0000",
+       "author": {"name": "alice", "displayName": "Alice Adams"},
+       "content": "https://jira.example.com/secure/attachment/72196/spec.pdf"}
+    ],
+    "comment": {
+      "total": 2, "maxResults": 2, "startAt": 0,
+      "comments": [
+        {"id": "20", "author": {"name": "bob", "displayName": "Bob Brown"},
+         "created": "2026-09-03T15:00:00.000+0000", "updated": "2026-09-03T16:30:00.000+0000",
+         "body": "Доступ к стенду: пароль: Qwerty123"},
+        {"id": "19", "author": {"name": "alice", "displayName": "Alice Adams"},
+         "created": "2026-09-03T14:23:48.931+0000", "updated": "2026-09-03T14:23:48.931+0000",
+         "body": "First comment"}
+      ]
+    }
+  },
+  "changelog": {
+    "startAt": 0, "maxResults": 2, "total": 2,
+    "histories": [
+      {"id": "1293990", "created": "2026-09-02T08:51:36.953+0000", "author": {"name": "alice"}, "items": [{"field": "Link"}]},
+      {"id": "1295236", "created": "2026-09-03T14:19:14.543+0000", "author": {"name": "alice"}, "items": [{"field": "Attachment"}]}
+    ]
+  }
+}

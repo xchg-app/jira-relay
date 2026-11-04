@@ -1,0 +1,173 @@
+#!/usr/bin/env python3
+"""Jira for agents, through a jira-relay service over ssh. Stdlib only.
+
+    jira get DEMO-42 --as backend
+    jira comment DEMO-42 --as backend <<'TXT'
+    Fixed the export, ready to check.
+    TXT
+    jira --help
+    jira setup HOST [--container NAME]     # once: where the service runs (saved in ~/.config/jira-relay/client.conf)
+
+Read freely, change only on your human's command (skills/jira/SKILL.md). The service parses commands: this client only
+builds the request (arguments, text from stdin, files for attach) and delivers it over ssh. ssh-agent:
+JIRA_SSH_AUTH_SOCK, else ~/.ssh/agent.sock if it exists (started each morning), else plain ssh.
+Host and container: JIRA_RELAY_HOST / JIRA_RELAY_CONTAINER, else `jira setup`. The user is your account on that host:
+ssh under your own login, the docker group is required; the service checks the login against its user list.
+"""
+import base64
+import getpass
+import json
+import os
+import select
+import subprocess
+import sys
+from pathlib import Path
+
+CONFIG = Path(os.environ.get('XDG_CONFIG_HOME', '~/.config')).expanduser() / 'jira-relay' / 'client.conf'
+CONTAINER = 'jira-relay-jira-relay-1'  # docker compose default for the project directory "jira-relay"
+VERSION = '0.3.0'  # jira-relay version this client and skill came with; set by bin/release
+
+
+def parse_version(value) -> tuple[int, ...]:
+    try:
+        return tuple(int(p) for p in str(value).split('.'))
+    except ValueError:
+        return ()
+
+
+def warn_if_outdated(service: str | None) -> None:
+    """Service newer than the client means the SKILL.md next to it is outdated too: the agent will miss new commands and rules."""
+    if service and parse_version(service) > parse_version(VERSION):
+        print(f'jira: jira-relay service is {service}, but this client is {VERSION} — update the jira-relay plugin '
+              f'(/plugin in Claude Code)', file=sys.stderr)
+
+
+def load_settings() -> dict:
+    """client.conf (key=value), overridden by JIRA_RELAY_HOST / JIRA_RELAY_CONTAINER."""
+    settings = {}
+    try:
+        for line in CONFIG.read_text().splitlines():
+            key, sep, value = line.partition('=')
+            if sep and not key.strip().startswith('#'):
+                settings[key.strip()] = value.strip()
+    except OSError:
+        pass
+    for key, env in (('host', 'JIRA_RELAY_HOST'), ('container', 'JIRA_RELAY_CONTAINER')):
+        if os.environ.get(env):
+            settings[key] = os.environ[env]
+    settings.setdefault('container', CONTAINER)
+    return settings
+
+
+def setup(args: list[str]) -> int:
+    """`jira setup HOST [--container NAME]`: local, nothing goes to the service."""
+    usage = 'usage: jira setup HOST [--container NAME]  (HOST: an ssh host or alias where jira-relay runs)'
+    if not args or args[0].startswith('-'):
+        return fail(usage)
+    host, container = args[0], CONTAINER
+    if args[1:2] == ['--container'] and len(args) == 3:
+        container = args[2]
+    elif len(args) != 1:
+        return fail(usage)
+    CONFIG.parent.mkdir(parents=True, exist_ok=True)
+    CONFIG.write_text(f'host={host}\ncontainer={container}\n')
+    print(f'jira: saved to {CONFIG}; check with: jira sites --as <your project>')
+    return 0
+
+
+def fail(message: str) -> int:
+    print(f'jira: {message}', file=sys.stderr)
+    return 1
+
+
+def read_stdin() -> str:
+    """Text from a heredoc or a pipe. An open but empty stdin (happens with agents) is not waited on."""
+    if sys.stdin is None or sys.stdin.closed or sys.stdin.isatty():
+        return ''
+    ready, _, _ = select.select([sys.stdin], [], [], 1.0)
+    return sys.stdin.read() if ready else ''
+
+
+def main() -> int:
+    # --as anywhere: `jira get DEMO-1 --as backend`. This way a Claude Code read permission is a command prefix
+    # (`bin/jira get:*`) and the agent name does not break it
+    argv, name, rest = sys.argv[1:], '', []
+    i = 0
+    while i < len(argv):
+        if argv[i] == '--as':
+            if i + 1 >= len(argv):
+                return fail('--as: the agent project name is required')
+            name, i = argv[i + 1], i + 2
+            continue
+        if argv[i].startswith('--as='):
+            name = argv[i][5:]
+        else:
+            rest.append(argv[i])
+        i += 1
+    argv = rest
+    if not argv:
+        argv = ['--help']
+    if argv[:1] == ['setup']:
+        return setup(argv[1:])
+    if argv == ['--version']:
+        print(f'jira {VERSION}')
+        return 0
+
+    # the command words without the global --jira option (the gateway reads it anywhere in argv)
+    words = [i for i, a in enumerate(argv)
+             if not a.startswith('--jira=') and a != '--jira' and not (i and argv[i - 1] == '--jira')]
+    command = [argv[i] for i in words[:2]]
+    files = {}
+    if command[:1] == ['attach']:
+        for i in words[2:]:
+            arg = argv[i]
+            path = Path(arg).expanduser()
+            try:
+                files[path.name] = base64.b64encode(path.read_bytes()).decode()
+            except OSError as e:
+                return fail(f'{arg}: {e.strerror}')
+            argv[i] = path.name
+    help_only = any(a in ('-h', '--help') for a in argv)
+    if command == ['token', 'set'] and not help_only and sys.stdin.isatty():
+        text = getpass.getpass('Jira Personal Access Token (hidden): ')
+    else:
+        text = '' if help_only else read_stdin()
+    request = {'as': name, 'argv': argv, 'text': text, 'files': files}
+
+    env = dict(os.environ)
+    sock = os.path.expanduser(os.environ.get('JIRA_SSH_AUTH_SOCK', '~/.ssh/agent.sock'))
+    if Path(sock).is_socket():
+        env['SSH_AUTH_SOCK'] = sock
+    elif 'JIRA_SSH_AUTH_SOCK' in os.environ:
+        return fail(f'ssh-agent is not running: no socket {sock}. Ask your human to start ssh-agent, then retry')
+    settings = load_settings()
+    host, container = settings.get('host'), settings['container']
+    if not host:
+        return fail('the jira-relay host is not set: ask your human where jira-relay runs, then jira setup HOST')
+    command = f'docker exec -i {container} jira-relay agent --user "$(id -un)"'
+    try:
+        done = subprocess.run(
+            ['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=15', host, command],
+            input=json.dumps(request, ensure_ascii=False).encode(), capture_output=True, timeout=180,
+            env=env,
+        )
+    except subprocess.TimeoutExpired:
+        return fail(f'{host} did not answer in 180 s; the change may have gone through — check: jira --as {name} log --since 1h')
+    stderr = done.stderr.decode(errors='replace').strip()
+    if done.returncode == 255:
+        return fail(f'ssh to {host} failed ({stderr.splitlines()[-1] if stderr else "no message"}). '
+                    f'Is ssh-agent running with the key registered in jira-relay ({sock})?')
+    try:
+        reply = json.loads(done.stdout)
+    except ValueError:
+        return fail(f'service replied with non-JSON (is the jira-relay container running?): {stderr or done.stdout[:300]!r}')
+    warn_if_outdated(reply.get('version'))
+    if reply.get('ok'):
+        out = reply.get('out') or ''
+        print(out, end='' if out.endswith('\n') else '\n')
+        return 0
+    return fail(reply.get('error') or 'error without text')
+
+
+if __name__ == '__main__':
+    sys.exit(main())
