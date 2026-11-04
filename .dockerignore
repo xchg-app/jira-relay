@@ -6,5 +6,8 @@ tests
 **/__pycache__
 *.pyc
 .codemap.tags
-plugin
+client
+harness
+tools
+.github
 .env

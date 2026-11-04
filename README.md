@@ -46,17 +46,21 @@ git fetch --tags && git checkout v0.4.0 && docker compose up -d --build
 docker compose logs --since 2m        # "jira-relay 0.4.0 started: …"
 ```
 
-## Install the plugin (each user)
+## Install the client (each user)
 
-```
-/plugin marketplace add xchg-app/jira-relay
-/plugin install jira-relay@jira-relay
-```
+The `jira` client and its skill come as a package for the user's coding agent:
+
+| harness | install |
+|---|---|
+| Claude Code | `/plugin marketplace add xchg-app/jira-relay-claude-code`, then `/plugin install jira-relay@jira-relay` |
+| Codex CLI | `codex plugin marketplace add xchg-app/jira-relay-codex`, then `codex plugin add jira-relay@jira-relay` |
+
+Any other agent with a shell: copy `client/bin/jira` somewhere on `PATH` and give it `client/skills/jira/SKILL.md`.
 
 Then once, in a terminal: `jira setup HOST` (an ssh host or alias where the service runs; `--container NAME` if it is
 not `jira-relay-jira-relay-1`), and, for non-admin users, `jira token set --jira main` with their own Jira personal
 access token (it is asked without echo and verified against Jira). `jira sites --as <project>` shows what is set up.
-The client warns when the service is newer than the plugin.
+The client warns when the service is newer than itself.
 
 ## Admin commands
 
@@ -113,18 +117,21 @@ python3 -m unittest discover -s tests -t .
 ./bin/jira-relay show --raw issue.json     # snapshot from a saved issue JSON, no config or token needed
 ```
 
-Python 3.12 stdlib only, no dependencies. The plugin lives in `plugin/` (`bin/jira`, `skills/jira/SKILL.md`), the
-marketplace manifest in `.claude-plugin/`.
+Python 3.12 stdlib only, no dependencies. The agent client and its skill live in `client/` (`bin/jira`,
+`skills/jira/SKILL.md`); the manifests of each harness (Claude Code, Codex) in `harness/<name>/`. `tools/package.sh <harness> <dir>` builds a
+package locally.
 
 ## Releases
 
 ```bash
-bin/release 0.4.0 --dry-run     # checks and the release text
-bin/release 0.4.0               # version (service, client, plugin.json), tag v0.4.0, push, GitHub Release (gh)
+bin/release 0.5.0 --dry-run     # checks and the release text
+bin/release 0.5.0               # version everywhere, tag v0.5.0 with the changelog, push
 ```
 
-The version lives in `jira_relay/__init__.py`, `plugin/bin/jira` and `plugin/.claude-plugin/plugin.json` and is
-changed only by the script. What went in is recorded in [CHANGELOG.md](CHANGELOG.md) under "Unreleased".
+The tag starts the `release` workflow: it builds the package for each harness and overwrites its repository
+(`xchg-app/jira-relay-claude-code`, `xchg-app/jira-relay-codex`; the workflow needs the `PACKAGE_REPOS_TOKEN` secret with write
+access to them), then creates the GitHub Release from the tag. The version lives in `jira_relay/__init__.py`,
+`client/bin/jira` and the harness manifests and is changed only by the script. What went in is recorded in [CHANGELOG.md](CHANGELOG.md) under "Unreleased".
 
 ## License
 

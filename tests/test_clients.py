@@ -53,7 +53,7 @@ class AgentClientTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {'XDG_CONFIG_HOME': tmp}):
             os.environ.pop('JIRA_RELAY_HOST', None)
             os.environ.pop('JIRA_RELAY_CONTAINER', None)
-            loader = importlib.machinery.SourceFileLoader('jira_client', str(ROOT / 'plugin' / 'bin' / 'jira'))
+            loader = importlib.machinery.SourceFileLoader('jira_client', str(ROOT / 'client' / 'bin' / 'jira'))
             client = importlib.util.module_from_spec(importlib.util.spec_from_loader('jira_client', loader))
             loader.exec_module(client)
 

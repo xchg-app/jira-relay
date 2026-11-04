@@ -6,6 +6,10 @@ Written for people and agents: what changed in behavior, not which files were to
 
 ## [Unreleased]
 
+### Breaking
+- The agent client is published as packages generated on each release, like xchg: Claude Code
+  (`xchg-app/jira-relay-claude-code`) and Codex CLI (`xchg-app/jira-relay-codex`). The marketplace in this repository is gone: reinstall from the package repository.
+
 ## [0.4.0] — 2026-11-04
 
 The first public release.

@@ -311,7 +311,7 @@ agent (PC) ── jira --as backend comment DEMO-42 <<'TXT' … ─────�
 service (container with the secrets) ── REST v2 ── Jira site(s) ────────────┘
 ```
 
-- The client `plugin/bin/jira` (a Claude Code plugin, marketplace in `.claude-plugin/`) is stdlib only. It builds the
+- The client `client/bin/jira` (packaged for Claude Code and Codex from `harness/`) is stdlib only. It builds the
   request as JSON (`{"as", "argv", "text", "files"}`) and passes it via stdin, so text with quotes, non-ASCII and
   newlines never goes through the remote shell. It prints the reply briefly (a link, the key of a created issue) or in
   full with `--json`. The service parses the commands: new commands do not require updating the client.
@@ -418,8 +418,8 @@ refusals before Jira and reads are not. `jira log` shows the agent's own actions
 
 ### How the agent learns about it
 
-The instruction is the skill `plugin/skills/jira/SKILL.md`, shipped with the client in the `jira-relay` Claude Code
-plugin; it is the only instruction for all agents, so agent commands change together with it. Each session sees only
+The instruction is the skill `client/skills/jira/SKILL.md`, shipped with the client in the `jira-relay` package for
+the agent's harness; it is the only instruction for all agents, so agent commands change together with it. Each session sees only
 the skill's description; the text loads when Jira comes up. Nothing goes into the agents' repositories.
 
 A recommended safeguard: allow only reading commands (`jira get|search|transitions|sites|watching|log|--help`) without

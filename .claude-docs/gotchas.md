@@ -22,7 +22,7 @@ tags: [memory/repo, gotcha]
 - **Transient network errors happen** (DNS "Try again", 502/503 from a proxy): `Jira._get` retries up to three
   times (`RETRIES`, `RETRY_DELAY`) on a network error and on 429/502/503/504. GET requests only.
 
-## Agents → Jira (`jira_relay/gateway/`, `plugin/bin/jira`)
+## Agents → Jira (`jira_relay/gateway/`, `client/bin/jira`)
 
 - **The link direction in `POST /rest/api/2/issueLink` is reversed relative to the field names**: the link source
   (the one Jira shows the outward phrase on, "blocks") is `inwardIssue`. "A blocks B" = `inwardIssue: A, outwardIssue: B`.

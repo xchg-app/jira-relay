@@ -9,10 +9,15 @@
     {
       "name": "jira-relay",
       "displayName": "jira-relay",
-      "source": "./plugin",
+      "source": "./",
       "description": "Jira Server/DC for coding agents through a jira-relay service: read freely, change on your human's command, watch issues into xchg hubs.",
       "category": "productivity",
-      "keywords": ["jira", "agents", "xchg", "issue-tracking"],
+      "keywords": [
+        "jira",
+        "agents",
+        "xchg",
+        "issue-tracking"
+      ],
       "homepage": "https://github.com/xchg-app/jira-relay",
       "repository": "https://github.com/xchg-app/jira-relay"
     }

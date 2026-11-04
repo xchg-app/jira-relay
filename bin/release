@@ -3,12 +3,13 @@
 
 1. Checks: branch main, clean working tree, main = origin/main, no such tag yet, version greater than the current one,
    tests pass, the "Unreleased" section of CHANGELOG.md is not empty, `gh` is logged in.
-2. Version goes into jira_relay/__init__.py, plugin/bin/jira and plugin/.claude-plugin/plugin.json (Claude Code
-   updates the plugin by it); "Unreleased" -> "[X.Y.Z] — date"; commit "Release X.Y.Z", annotated tag vX.Y.Z with the
-   section text; push main and the tag.
-3. GitHub Release (`gh release create`) with the same text.
+2. Version goes into jira_relay/__init__.py, client/bin/jira and the harness manifests (harness/*: Claude Code and
+   Codex update the package by it); "Unreleased" -> "[X.Y.Z] — date"; commit "Release X.Y.Z", annotated tag vX.Y.Z
+   with the section text as its body; push main and the tag.
+3. The tag starts .github/workflows/release.yml: it builds the packages (tools/package.sh), publishes them to
+   xchg-app/jira-relay-<harness> (tools/publish.sh) and creates the GitHub Release from the tag's body.
 
---publish X.Y.Z runs only step 3 for an already pushed tag (if GitHub did not answer the first time).
+--publish X.Y.Z only creates the GitHub Release from an already pushed tag by hand (if the workflow could not).
 """
 import argparse
 import json
@@ -22,8 +23,9 @@ ROOT = Path(__file__).resolve().parents[1]
 CHANGELOG = ROOT / 'CHANGELOG.md'
 VERSION_FILES = {
     ROOT / 'jira_relay' / '__init__.py': re.compile(r"^(__version__ = ')([^']+)(')", re.M),
-    ROOT / 'plugin' / 'bin' / 'jira': re.compile(r"^(VERSION = ')([^']+)(')", re.M),
-    ROOT / 'plugin' / '.claude-plugin' / 'plugin.json': re.compile(r'^(  "version": ")([^"]+)(")', re.M),
+    ROOT / 'client' / 'bin' / 'jira': re.compile(r"^(VERSION = ')([^']+)(')", re.M),
+    **{ROOT / 'harness' / path: re.compile(r'^(  "version": ")([^"]+)(")', re.M)
+       for path in ('claude-code/.claude-plugin/plugin.json', 'codex/.codex-plugin/plugin.json')},
 }
 UNRELEASED = '## [Unreleased]'
 SEMVER = re.compile(r'^\d+\.\d+\.\d+$')
@@ -131,7 +133,6 @@ def main() -> int:
             return 0
 
         notes = check(args.version)
-        gh_ready()
         print(f'jira-relay {current_version()} → {args.version}\n\n{notes}\n')
         if args.dry_run:
             print('dry-run: nothing changed')
@@ -141,8 +142,8 @@ def main() -> int:
         git('commit', '-q', '-m', f'Release {args.version}')
         git('tag', '-a', f'v{args.version}', '-m', f'jira-relay {args.version}\n\n{notes}')
         git('push', '--quiet', 'origin', 'main', f'v{args.version}', capture=False)
-        print(f'tag v{args.version} pushed')
-        print(publish(args.version, notes))
+        print(f'tag v{args.version} pushed; the release workflow publishes the packages and the GitHub Release:')
+        print(f'gh run list --workflow release.yml -L 1')
         return 0
     except ReleaseError as e:
         print(f'release: {e}', file=sys.stderr)

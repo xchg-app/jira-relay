@@ -19,7 +19,7 @@ there is text, and journaled (gateway/journal.py; a non-admin agent is "<login>/
 Watching goes through tracker/api.py: any issue, the snapshot is sent at once (the user's command to the agent is the
 confirmation), to the user's outbounds (config.outbounds_of; the admin — all). Polling and snapshots
 use the service secret. Changing and watching happen on the user's command: that is an agent rule
-(plugin/skills/jira/SKILL.md) plus Claude Code's confirmation; the service cannot check it.
+(client/skills/jira/SKILL.md) plus Claude Code's confirmation; the service cannot check it.
 """
 import argparse
 import base64

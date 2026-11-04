@@ -1,0 +1,20 @@
+{
+  "name": "jira-relay",
+  "interface": {
+    "displayName": "jira-relay"
+  },
+  "plugins": [
+    {
+      "name": "jira-relay",
+      "source": {
+        "source": "local",
+        "path": "./"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

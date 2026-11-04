@@ -38,8 +38,8 @@ def parse_version(value) -> tuple[int, ...]:
 def warn_if_outdated(service: str | None) -> None:
     """Service newer than the client means the SKILL.md next to it is outdated too: the agent will miss new commands and rules."""
     if service and parse_version(service) > parse_version(VERSION):
-        print(f'jira: jira-relay service is {service}, but this client is {VERSION} — update the jira-relay plugin '
-              f'(/plugin in Claude Code)', file=sys.stderr)
+        print(f'jira: jira-relay service is {service}, but this client is {VERSION} — update the jira-relay '
+              f'plugin/extension of your agent', file=sys.stderr)
 
 
 def load_settings() -> dict:

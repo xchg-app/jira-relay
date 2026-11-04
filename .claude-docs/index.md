@@ -11,7 +11,7 @@ tags: [memory/repo, index]
 | Poll cycle, window, errors | `jira_relay/tracker/poll.py` (docstring) |
 | Config file, secrets layout, admin commands | `jira_relay/config.py` (docstring), `jira_relay/admin.py`, [../docs/design.md](../docs/design.md) "Configuration" |
 | A new outbound type or auth scheme | `jira_relay/tracker/outbounds.py` (`Driver`), `jira_relay/jira.py` (`Auth`) |
-| Agents → Jira: commands, permissions, signature, journal | [../plugin/skills/jira/SKILL.md](../plugin/skills/jira/SKILL.md), [../docs/design.md](../docs/design.md) "Agents → Jira", `jira_relay/gateway/` |
+| Agents → Jira: commands, permissions, signature, journal | [../client/skills/jira/SKILL.md](../client/skills/jira/SKILL.md), [../docs/design.md](../docs/design.md) "Agents → Jira", `jira_relay/gateway/` |
 | Install, update, release | [../README.md](../README.md), `bin/release` |
 
 ## Code
@@ -30,7 +30,7 @@ tags: [memory/repo, index]
   sites, permissions, signature, user tokens, `journal.py` — the `actions` journal
 - `jira_relay/cli.py` — command line over both parts
 - Boundary: gateway → tracker only through `tracker/api.py` ([../docs/design.md](../docs/design.md) "Code")
-- `plugin/` — the Claude Code plugin for agents: `bin/jira` (client: an ssh request to `jira-relay agent` on the
-  service host; `bin/jira` at the repo root is a symlink to it), `skills/jira/SKILL.md`; marketplace in `.claude-plugin/`
+- `client/` — what agents get: `bin/jira` (an ssh request to `jira-relay agent` on the service host; `bin/jira` at the
+  repo root is a symlink to it) and `skills/jira/SKILL.md`. `harness/<name>/` — package manifests (Claude Code, Codex); `tools/package.sh`, `tools/publish.sh` and `.github/workflows/release.yml` build and publish them on a tag
 - `docker/` — `entrypoint.sh` (`jira-relay setup`, then the command), `known_hosts` (default pinned hub host keys)
 - `bin/release` — version bump, tag, GitHub Release via `gh`
