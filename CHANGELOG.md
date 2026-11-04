@@ -6,6 +6,8 @@ Written for people and agents: what changed in behavior, not which files were to
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-11-04
+
 The first public release.
 
 ### Tracker: Jira → outbounds

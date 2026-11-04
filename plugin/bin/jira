@@ -25,7 +25,7 @@ from pathlib import Path
 
 CONFIG = Path(os.environ.get('XDG_CONFIG_HOME', '~/.config')).expanduser() / 'jira-relay' / 'client.conf'
 CONTAINER = 'jira-relay-jira-relay-1'  # docker compose default for the project directory "jira-relay"
-VERSION = '0.3.0'  # jira-relay version this client and skill came with; set by bin/release
+VERSION = '0.4.0'  # jira-relay version this client and skill came with; set by bin/release
 
 
 def parse_version(value) -> tuple[int, ...]:
