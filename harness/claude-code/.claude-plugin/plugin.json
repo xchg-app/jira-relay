@@ -1,6 +1,6 @@
 {
   "name": "jira-relay",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "license": "MIT",
   "description": "Jira Server/DC for coding agents through a jira-relay service: read, comment, create, transition, edit, link, attach, and watch issues into xchg hubs.",
   "author": {

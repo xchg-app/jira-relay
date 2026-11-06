@@ -6,6 +6,8 @@ Written for people and agents: what changed in behavior, not which files were to
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-11-06
+
 ### Breaking
 - Users register themselves with their Jira token instead of being added by the admin: the login is what Jira
   says the token's owner is, and the user gets a service token for the `jira` client. `admin`, `[users.*]`, agent
