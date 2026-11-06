@@ -222,7 +222,7 @@ class WatchTest(GatewayCase):
         reply = self.ask(['watch', 'DEMO-42', 'team:@backend'])
         self.assertTrue(reply['ok'], reply)
         self.assertEqual(self.posts, [('team:@backend', 'demo-42-snapshot')])
-        self.assertEqual(self.state.address_owners('main/DEMO-42'), {'team:@backend': 'alice/backend'})
+        self.assertEqual(self.state.owners('main/DEMO-42'), {'team:@backend': ['alice/backend']})
         self.assertEqual(self.rows(), [('alice/backend', 'watch', 'main/DEMO-42', 'team:@backend')])
 
         self.assertTrue(self.ask(['watch', 'other/DEMO-42', 'me:alice'])['ok'])  # same key, another site
@@ -234,14 +234,29 @@ class WatchTest(GatewayCase):
         self.assertIn('no Jira token for main', self.ask(['watch', 'DEMO-42', 'team:@backend:bob'], user='bob')['error'])
         self.give_token('bob', 'main')
         self.assertTrue(self.ask(['watch', 'DEMO-42', 'team:@backend:bob'], user='bob')['ok'])
-        self.assertEqual(self.state.address_owners('main/DEMO-42'),
-                         {'team:@backend': 'alice/backend', 'team:@backend:bob': 'bob/backend'})
+        self.assertEqual(self.state.owners('main/DEMO-42'),
+                         {'team:@backend': ['alice/backend'], 'team:@backend:bob': ['bob/backend']})
         self.assertIn('me:alice', self.ask(['watching'], user='bob')['out'])
 
         self.assertTrue(self.ask(['unwatch', 'DEMO-42', '--jira', 'other'])['ok'])
         self.assertIsNone(self.state.tracked('other/DEMO-42'))
         self.assertIsNotNone(self.state.tracked('main/DEMO-42'))
         self.assertEqual(len(self.posts), 3)
+
+    def test_two_watchers_share_an_address(self):
+        self.give_token('bob', 'main')
+        self.assertTrue(self.ask(['watch', 'DEMO-42', 'team:@backend'])['ok'])
+        reply = self.ask(['watch', 'DEMO-42', 'team:@backend'], user='bob', who='ops')
+        self.assertIn('already goes to team:@backend (watched by alice/backend)', reply['out'])
+        self.assertEqual(self.posts, [('team:@backend', 'demo-42-snapshot')])  # one snapshot, one address
+        self.assertEqual(self.state.owners('main/DEMO-42'), {'team:@backend': ['alice/backend', 'bob/ops']})
+        self.assertEqual(self.state.owner_logins('main/DEMO-42'), ['alice', 'bob'])
+
+        self.assertIn('not among the watchers', self.ask(['unwatch', 'DEMO-42', 'me:alice'], user='bob')['error'])
+        self.assertIn('still goes there for bob/ops', self.ask(['unwatch', 'DEMO-42'])['out'])  # alice leaves
+        self.assertEqual(self.state.addresses('main/DEMO-42'), ['team:@backend'])
+        self.assertIn('no longer tracked', self.ask(['unwatch', 'DEMO-42'], user='bob')['out'])  # the last one
+        self.assertIsNone(self.state.tracked('main/DEMO-42'))
 
 
 class SitesTest(GatewayCase):

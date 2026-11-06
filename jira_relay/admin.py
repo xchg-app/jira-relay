@@ -12,6 +12,7 @@ from .config import Config, ConfigError, Outbound, Site
 from .gateway.auth import Users
 from .jira import AUTH_KINDS, Jira, JiraError, make_auth
 from .tracker import ops, outbounds
+from .tracker.state import lock
 
 
 
@@ -126,6 +127,12 @@ def cmd_user(cfg: Config, args) -> int:
                 say('no users yet: they register themselves with their Jira token (jira register)')
             return 0
         login = config.check_login(args.login)
+        if args.action == 'claim':
+            if not users.exists(login):
+                raise ConfigError(f'no user {login}: they register first')
+            with lock(cfg.state_dir):
+                ops.claim(cfg, login)
+            return 0
         if not users.revoke(login):
             raise ConfigError(f'no user {login}')
         shutil.rmtree(cfg.secrets_dir / 'users' / login, ignore_errors=True)
@@ -158,8 +165,9 @@ def add_parsers(sub) -> None:
     p.add_argument('--login', dest='bot_login', help='xchg: the bot login in the hub')
     p.set_defaults(handler=cmd_outbound, need=('name',))
 
-    p = sub.add_parser('user', help='registered users (they register themselves): ls | revoke LOGIN')
-    p.add_argument('action', choices=('ls', 'revoke'))
+    p = sub.add_parser('user', help='registered users (they register themselves): ls | revoke LOGIN | '
+                                    'claim LOGIN (adopt addresses without a watcher)')
+    p.add_argument('action', choices=('ls', 'revoke', 'claim'))
     p.add_argument('login', nargs='?')
     p.set_defaults(handler=cmd_user, need=('login',))
 

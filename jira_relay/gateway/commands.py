@@ -147,7 +147,7 @@ def parse_key(ctx: Context, value: str, site: str | None = None) -> tuple[str, s
 
 
 def who(ctx: Context) -> str:
-    """Name in the journal and in "who added the address": <login>/<agent>."""
+    """Name in the journal: <login>/<agent>."""
     return f'{ctx.login}/{ctx.agent}'
 
 
@@ -481,13 +481,13 @@ def cmd_watch(ctx: Context, args) -> str:
     if not args.dry_run:
         ctx.target, ctx.summary = ref, ' '.join(targets) + (' +subtasks' if args.with_subtasks else '')
     return tracked(ctx, lambda t: t.watch(ref, targets, with_subtasks=args.with_subtasks,
-                                          snapshot=snapshot_mode(args), by=who(ctx)))
+                                          snapshot=snapshot_mode(args), login=ctx.login, agent=ctx.agent))
 
 
 def cmd_unwatch(ctx: Context, args) -> str:
     ref = watched_ref(ctx, args.key)
     ctx.target, ctx.summary = ref, args.address or 'all addresses'
-    return tracked(ctx, lambda t: t.unwatch(ref, args.address, hubs=None))
+    return tracked(ctx, lambda t: t.unwatch(ref, args.address, login=ctx.login))
 
 
 def cmd_subtasks(ctx: Context, args) -> str:
@@ -498,7 +498,7 @@ def cmd_subtasks(ctx: Context, args) -> str:
 
 
 def cmd_watching(ctx: Context, args) -> str:
-    return tracked(ctx, lambda t: t.watching(None))
+    return tracked(ctx, lambda t: t.watching())
 
 
 def cmd_sites(ctx: Context, args) -> str:
@@ -624,7 +624,7 @@ def build_parser() -> _Parser:
     choice.add_argument('--dry-run', action='store_true', help='show snapshots, send and store nothing')
     p.set_defaults(handler=cmd_watch)
 
-    p = sub.add_parser('unwatch', help='stop watching: without an address, entirely (with subtasks)')
+    p = sub.add_parser('unwatch', help='leave the watchers of an issue: at one address, or at all of yours')
     p.add_argument('key')
     p.add_argument('address', nargs='?')
     p.set_defaults(handler=cmd_unwatch)
@@ -640,7 +640,7 @@ def build_parser() -> _Parser:
     p = sub.add_parser('sites', help='Jira sites, your token per site, where this agent may watch to')
     p.set_defaults(handler=cmd_sites)
 
-    p = sub.add_parser('watching', help='what is watched and where (in parentheses: the agent that added the address)')
+    p = sub.add_parser('watching', help='what is watched and where (in parentheses: who watches at the address)')
     p.set_defaults(handler=cmd_watching)
 
     p = sub.add_parser('token', help='your Jira token for another site: set (from stdin), status, rm; --jira SITE')

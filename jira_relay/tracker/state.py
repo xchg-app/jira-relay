@@ -3,7 +3,10 @@
 - Issues are "<site>/<KEY>" (a Jira site from the config and the issue key).
 - tracked: tracked issues; subtasks picked up with their parent have parent_key.
 - addresses: publishing addresses of top-level issues; subtasks are published to their parent's addresses.
-  added_by: the agent that added the address (`jira watch`); empty means manually, by an admin command.
+- owners: who watches the issue at an address (login; agent is the last agent of theirs that asked). Two users
+  watching one issue into one address share the address: one record, one note per change. An address lives while it
+  has owners (an owner is removed by `jira unwatch`); an address without owners was added on the host and is
+  removed there. Polling runs with an owner's Jira token (poll.py).
 - deliveries: the last delivered fingerprint per (issue, address) pair. Each address has its own pair:
   if one hub is unreachable, the note still goes to the others and is not duplicated on retry.
 
@@ -26,8 +29,15 @@ create table if not exists tracked (
 create table if not exists addresses (
     key      text not null,
     address  text not null,
-    added_by text not null default '',
     primary key (key, address)
+);
+create table if not exists owners (
+    key      text not null,
+    address  text not null,
+    login    text not null,
+    agent    text not null default '',
+    added_at text not null,
+    primary key (key, address, login)
 );
 create table if not exists deliveries (
     key             text not null,
@@ -63,6 +73,21 @@ class State:
         self.db = sqlite3.connect(path, timeout=30)  # the gateway writes its journal to the same file while the cycle holds the database
         self.db.row_factory = sqlite3.Row
         self.db.executescript(SCHEMA)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """Up to 0.5: addresses.added_by held one agent name per address ('<login>/<agent>', or a bare agent name for
+        the admin's). It becomes an owner; a bare name gives no owner: `jira-relay user claim LOGIN` adopts those."""
+        columns = [r['name'] for r in self.db.execute('pragma table_info(addresses)')]
+        if 'added_by' not in columns:
+            return
+        with self.db:
+            for r in self.db.execute('select key, address, added_by from addresses where added_by != \'\'').fetchall():
+                login, _, agent = r['added_by'].rpartition('/')
+                if login:
+                    self.db.execute('insert or ignore into owners (key, address, login, agent, added_at) values (?, ?, ?, ?, ?)',
+                                    (r['key'], r['address'], login, agent, _now()))
+            self.db.execute('alter table addresses drop column added_by')
 
     # --- what we track ---------------------------------------------------------------------------
     def tracked(self, key: str) -> sqlite3.Row | None:
@@ -89,7 +114,7 @@ class State:
         keys = [k for k in keys if self.tracked(k)]
         with self.db:
             for k in keys:
-                for table in ('tracked', 'addresses', 'deliveries'):
+                for table in ('tracked', 'addresses', 'owners', 'deliveries'):
                     self.db.execute(f'delete from {table} where key = ?', (k,))
         return keys
 
@@ -102,18 +127,48 @@ class State:
         row = self.tracked(key)
         return self.addresses(row['parent_key'] or key) if row else []
 
-    def address_owners(self, key: str) -> dict[str, str]:
-        return {r['address']: r['added_by'] for r in
-                self.db.execute('select address, added_by from addresses where key = ? order by rowid', (key,))}
+    def owners(self, key: str) -> dict[str, list[str]]:
+        """address → its owners as '<login>/<agent>' (or just the login), in the order they came."""
+        result = {a: [] for a in self.addresses(key)}
+        for r in self.db.execute('select address, login, agent from owners where key = ? order by rowid', (key,)):
+            result.setdefault(r['address'], []).append(f'{r["login"]}/{r["agent"]}' if r['agent'] else r['login'])
+        return result
 
-    def add_address(self, key: str, address: str, added_by: str = '') -> None:
+    def owner_logins(self, key: str) -> list[str]:
+        """Who watches the issue (a subtask: its parent), first owner first: polling runs with their tokens."""
+        row = self.tracked(key)
+        top = (row['parent_key'] or key) if row else key
+        return list(dict.fromkeys(r['login'] for r in self.db.execute(
+            'select login from owners where key = ? order by rowid', (top,))))
+
+    def is_owner(self, key: str, address: str, login: str) -> bool:
+        return self.db.execute('select 1 from owners where key = ? and address = ? and login = ?',
+                               (key, address, login)).fetchone() is not None
+
+    def add_address(self, key: str, address: str, login: str = '', agent: str = '') -> None:
+        """The address, and the owner when given (an existing owner of it only updates their agent)."""
         with self.db:
-            self.db.execute('insert or ignore into addresses (key, address, added_by) values (?, ?, ?)',
-                            (key, address, added_by))
+            self.db.execute('insert or ignore into addresses (key, address) values (?, ?)', (key, address))
+            if login:
+                self.db.execute('insert into owners (key, address, login, agent, added_at) values (?, ?, ?, ?, ?) '
+                                'on conflict(key, address, login) do update set agent = excluded.agent',
+                                (key, address, login, agent, _now()))
+
+    def remove_owner(self, key: str, address: str, login: str) -> int:
+        """Returns how many owners the address still has."""
+        with self.db:
+            self.db.execute('delete from owners where key = ? and address = ? and login = ?', (key, address, login))
+        return self.db.execute('select count(*) from owners where key = ? and address = ?', (key, address)).fetchone()[0]
+
+    def ownerless(self) -> list[tuple[str, str]]:
+        return [(r['key'], r['address']) for r in self.db.execute(
+            'select a.key, a.address from addresses a left join owners o on o.key = a.key and o.address = a.address '
+            'where o.login is null order by a.rowid')]
 
     def remove_address(self, key: str, address: str) -> None:
         with self.db:
             self.db.execute('delete from addresses where key = ? and address = ?', (key, address))
+            self.db.execute('delete from owners where key = ? and address = ?', (key, address))
             for k in [key] + self.subtasks(key):
                 self.db.execute('delete from deliveries where key = ? and address = ?', (k, address))
 

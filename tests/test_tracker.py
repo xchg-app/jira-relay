@@ -3,6 +3,7 @@ import copy
 import io
 import json
 import re
+import sqlite3
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -184,6 +185,24 @@ class PollTest(unittest.TestCase):
         self.assertEqual(len(self.posts), 2)
         self.poll(FakeJira(RAW, edited(subtask, status={'name': 'Done'})))
         self.assertEqual(self.sent()[2:], [('team:@backend', 'demo-47-status'), ('me:alice', 'demo-47-status')])
+
+
+class MigrationTest(unittest.TestCase):
+    def test_added_by_becomes_owners(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'state.db'
+            db = sqlite3.connect(path)
+            db.executescript("""
+                create table addresses (key text, address text, added_by text not null default '', primary key (key, address));
+                insert into addresses values ('main/DEMO-1', 'team:@a', 'bob/backend'), ('main/DEMO-1', 'me:alice', 'backend'),
+                                             ('main/DEMO-2', 'team:@b', '');
+            """)
+            db.commit(), db.close()
+            state = State(path)
+            self.assertEqual(state.owners('main/DEMO-1'), {'team:@a': ['bob/backend'], 'me:alice': []})
+            self.assertEqual(state.ownerless(), [('main/DEMO-1', 'me:alice'), ('main/DEMO-2', 'team:@b')])
+            self.assertEqual([r[1] for r in state.db.execute('pragma table_info(addresses)')], ['key', 'address'])
+            state.db.close()
 
 
 if __name__ == '__main__':

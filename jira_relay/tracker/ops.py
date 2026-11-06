@@ -7,6 +7,9 @@ Issues are "<site>/<KEY>" (parse_ref): a bare key belongs to the default site. J
 
 snapshot: what to do with snapshots for new addresses and issues: 'ask' (ask in the terminal), 'send', 'none'
 (only changes from now on), 'dry' (print, do not send or remember anything).
+
+owner: who asks, (login, agent); None — a host command, the address gets no owner. Two owners of one address share
+it (state.py): the second gets no snapshot, the issue is published there once.
 """
 import json
 import re
@@ -18,7 +21,7 @@ from .. import config, render
 from ..issue import last_history_id, normalize
 from ..jira import JiraError
 from ..mask import mask
-from . import address, hub, outbounds
+from . import hub, outbounds
 from .attachments import prepare
 from .poll import Poller, log
 from .state import State
@@ -144,7 +147,15 @@ def _subtasks_in_jira(jira, state: State, site: str, ref: str) -> list[tuple[dic
     return [(raw, ref) for raw in jira.search(f'parent = {split(ref)[1]}') if not state.tracked(f'{site}/{raw["key"]}')]
 
 
-def add(cfg: config.Config, ref: str, addresses: list[str], with_subtasks: bool, snapshot: str, by: str = '') -> None:
+Owner = tuple[str, str] | None
+
+
+def _owner(owner: Owner) -> tuple[str, str]:
+    return owner or ('', '')
+
+
+def add(cfg: config.Config, ref: str, addresses: list[str], with_subtasks: bool, snapshot: str,
+        owner: Owner = None) -> None:
     ref, addresses = parse_ref(cfg, ref), parse_addresses(cfg, addresses)
     state = open_state(cfg)
     if row := state.tracked(ref):
@@ -158,7 +169,7 @@ def add(cfg: config.Config, ref: str, addresses: list[str], with_subtasks: bool,
         refs = publish_snapshots(cfg, state, jira, site, found, addresses, with_subtasks, snapshot, Path(tmp))
     if snapshot != 'dry':
         for target in addresses:
-            state.add_address(ref, target, by)
+            state.add_address(ref, target, *_owner(owner))
         print(f'tracking → {", ".join(addresses)}: {", ".join(refs)}')
 
 
@@ -171,7 +182,7 @@ def _top_level(state: State, ref: str):
     return row
 
 
-def add_address(cfg: config.Config, ref: str, target: str, snapshot: str, by: str = '') -> None:
+def add_address(cfg: config.Config, ref: str, target: str, snapshot: str, owner: Owner = None) -> None:
     """One more address of a tracked issue: it gets snapshots of the issue and its subtasks right away."""
     ref, (target,) = parse_ref(cfg, ref), parse_addresses(cfg, [target])
     state = open_state(cfg)
@@ -185,7 +196,7 @@ def add_address(cfg: config.Config, ref: str, target: str, snapshot: str, by: st
     with tempfile.TemporaryDirectory() as tmp:
         publish_snapshots(cfg, state, jira, site, found, [target], bool(row['with_subtasks']), snapshot, Path(tmp))
     if snapshot != 'dry':
-        state.add_address(ref, target, by)
+        state.add_address(ref, target, *_owner(owner))
         print(f'{ref}: published to {", ".join(current + [target])}')
 
 
@@ -241,8 +252,8 @@ def untrack(cfg: config.Config, ref: str) -> None:
     print(f'no longer tracked: {", ".join(removed)}')
 
 
-def listing(cfg: config.Config, hubs: tuple[str, ...] | None = None) -> None:
-    """hubs: show only addresses in these outbounds (a user's agent does not see other users' outbounds)."""
+def listing(cfg: config.Config) -> None:
+    """Tracked issues, their addresses and who watches at each (in parentheses; none: added on the host)."""
     state = open_state(cfg)
     shown = set()
     for r in state.all_tracked():
@@ -250,62 +261,89 @@ def listing(cfg: config.Config, hubs: tuple[str, ...] | None = None) -> None:
             if r['parent_key'] in shown:
                 print(f'  {r["key"]:<16} subtask of {r["parent_key"]}, {r["added_at"]}')
             continue
-        owners = {a: by for a, by in state.address_owners(r['key']).items() if hubs is None or address.hub_of(a) in hubs}
-        if not owners:
-            continue
         shown.add(r['key'])
         flags = ', with subtasks' if r['with_subtasks'] else ''
-        targets = [f'{a} ({by})' if by else a for a, by in owners.items()]
+        targets = [f'{a} ({", ".join(by)})' if by else a for a, by in state.owners(r['key']).items()]
         print(f'{r["key"]:<18} {r["added_at"]}{flags} → {", ".join(targets)}')
     if not shown:
         print('nothing is tracked')
 
 
-def watch(cfg: config.Config, ref: str, targets: list[str], with_subtasks: bool, snapshot: str, by: str) -> None:
-    """A new issue is like add; an already tracked one gets the missing addresses and subtasks (subtasks on)."""
+def claim(cfg: config.Config, login: str) -> None:
+    """Addresses without an owner (added on the host, or by the admin's agents before 0.6) get this owner."""
+    state = open_state(cfg)
+    orphans = state.ownerless()
+    for key, target in orphans:
+        state.add_address(key, target, login)
+    print(f'{login} now watches: ' + (', '.join(f'{k} → {a}' for k, a in orphans) if orphans else 'nothing new'))
+
+
+def watch(cfg: config.Config, ref: str, targets: list[str], with_subtasks: bool, snapshot: str, owner: Owner) -> None:
+    """A new issue is like add; an already tracked one gets the missing addresses and subtasks (subtasks on). At an
+    address the issue already goes to, the owner only joins the watchers: no second snapshot."""
     ref = parse_ref(cfg, ref)
     state = open_state(cfg)
     row = state.tracked(ref)
     if not row:
-        add(cfg, ref, targets, with_subtasks, snapshot, by)
+        add(cfg, ref, targets, with_subtasks, snapshot, owner)
         return
     if row['parent_key']:
         raise TrackerError(f'{ref} is a subtask of {row["parent_key"]} and is tracked with it; '
                            f'addresses are set on {row["parent_key"]}')
     current = state.addresses(ref)
-    new = [t for t in parse_addresses(cfg, targets) if t not in current]
+    wanted = parse_addresses(cfg, targets)
+    new = [t for t in wanted if t not in current]
+    joined = [t for t in wanted if t in current and owner and not state.is_owner(ref, t, owner[0])]
     turn_on = with_subtasks and not row['with_subtasks']
     if turn_on:
         subtasks(cfg, ref, True, snapshot)
     for target in new:
-        add_address(cfg, ref, target, snapshot, by)
-    if not (new or turn_on):
+        add_address(cfg, ref, target, snapshot, owner)
+    for target in joined:
+        others = ', '.join(state.owners(ref)[target]) or 'the host'
+        if snapshot != 'dry':
+            state.add_address(ref, target, *owner)
+        print(f'{ref} already goes to {target} (watched by {others}): you watch it there too, no new snapshot')
+    if not (new or joined or turn_on):
         print(f'{ref} is already published to {", ".join(current)}')
 
 
-def unwatch(cfg: config.Config, ref: str, target: str | None, hubs: tuple[str, ...] | None) -> None:
-    """With an address, remove it (the last one untracks the issue); without, untrack entirely, or, when hubs is
-    given, only the addresses in those outbounds: other addresses of the issue stay."""
+def unwatch(cfg: config.Config, ref: str, target: str | None, login: str = '') -> None:
+    """A host command (no login) removes the address (the last one untracks the issue), or the issue entirely.
+    A user leaves the watchers of the address (all of their addresses without one); an address without watchers
+    is removed, the issue without addresses untracked."""
     ref = parse_ref(cfg, ref)
     state = open_state(cfg)
     row = state.tracked(ref)
     if not row:
         raise TrackerError(f'{ref} is not tracked')
+    if row['parent_key']:
+        if target:
+            raise TrackerError(f'{ref} is a subtask of {row["parent_key"]}: addresses are set on the parent')
+        untrack(cfg, ref)
+        return
     current = state.addresses(ref)
     if target:
         (target,) = parse_addresses(cfg, [target])
-        if row['parent_key'] or current != [target]:
+    if not login:
+        if target and current != [target]:
             remove_address(cfg, ref, target)
+        else:
+            untrack(cfg, ref)
+        return
+    mine = [a for a in ([target] if target else current) if state.is_owner(ref, a, login)]
+    if not mine:
+        raise TrackerError(f'{ref}: {login} is not among the watchers' + (f' at {target}' if target else '')
+                           + f' (jira watching shows who is)')
+    for one in mine:
+        if state.remove_owner(ref, one, login):
+            print(f'{ref}: you no longer watch at {one}; it still goes there for {", ".join(state.owners(ref)[one])}')
+            continue
+        if state.addresses(ref) == [one]:
+            untrack(cfg, ref)
             return
-    elif hubs is not None and not row['parent_key']:
-        own = [a for a in current if address.hub_of(a) in hubs]
-        if not own:
-            raise TrackerError(f'{ref} is not published to {", ".join(hubs)}')
-        if own != current:
-            for one in own:
-                remove_address(cfg, ref, one)
-            return
-    untrack(cfg, ref)
+        state.remove_address(ref, one)
+        print(f'{ref}: no longer published to {one}; remaining: {", ".join(state.addresses(ref))}')
 
 
 def setup(cfg: config.Config) -> None:

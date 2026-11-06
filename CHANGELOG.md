@@ -12,6 +12,10 @@ Written for people and agents: what changed in behavior, not which files were to
   `projects` and `watch_to` are gone from the config; `jira-relay user` is `ls | revoke LOGIN`. Every registered user
   may change any issue their Jira account can, and watch into any configured outbound; `jira watch` always takes an
   explicit address. The journal names every agent `<login>/<agent>`.
+- Addresses have watchers: two users watching one issue into one address share it (one snapshot, one note per
+  change), `jira unwatch` only leaves the watchers, the address goes with its last watcher. `ls`/`jira watching`
+  list the watchers per address. Addresses added on the host take `--by LOGIN`; `jira-relay user claim LOGIN`
+  adopts the ones without a watcher (needed once after the upgrade for the admin's old addresses).
 
 ## [0.5.0] — 2026-11-05
 

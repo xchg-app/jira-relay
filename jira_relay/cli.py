@@ -29,8 +29,12 @@ def cmd_show(cfg: config.Config, args) -> int:
     return 0
 
 
+def owner(args):
+    return (args.by, '') if getattr(args, 'by', None) else None
+
+
 def cmd_add(cfg: config.Config, args) -> int:
-    ops.add(cfg, args.key, args.addresses, args.with_subtasks, snapshot_mode(args))
+    ops.add(cfg, args.key, args.addresses, args.with_subtasks, snapshot_mode(args), owner(args))
     return 0
 
 
@@ -38,7 +42,7 @@ def cmd_to(cfg: config.Config, args) -> int:
     if args.action == 'rm':
         ops.remove_address(cfg, args.key, args.address)
     else:
-        ops.add_address(cfg, args.key, args.address, snapshot_mode(args))
+        ops.add_address(cfg, args.key, args.address, snapshot_mode(args), owner(args))
     return 0
 
 
@@ -105,6 +109,7 @@ def build_parser() -> argparse.ArgumentParser:
     add.add_argument('addresses', nargs='+', metavar='address',
                      help='hub[:@project][:person]; hub alone means everyone in the hub')
     add.add_argument('--with-subtasks', action='store_true', help='with subtasks; new ones are picked up automatically')
+    add.add_argument('--by', metavar='LOGIN', help='the registered user who watches it (polling uses their token)')
     choice = add.add_mutually_exclusive_group()
     choice.add_argument('--yes', action='store_true', help='send the snapshot without asking')
     choice.add_argument('--no-snapshot', action='store_true', help='do not send the snapshot')
@@ -124,6 +129,7 @@ def build_parser() -> argparse.ArgumentParser:
     to.add_argument('key')
     to.add_argument('action', choices=('add', 'rm'))
     to.add_argument('address')
+    to.add_argument('--by', metavar='LOGIN', help='add: the registered user who watches it')
     choice = to.add_mutually_exclusive_group()
     choice.add_argument('--yes', action='store_true', help='send snapshots to the new address without asking')
     choice.add_argument('--no-snapshot', action='store_true', help='do not send snapshots: only changes from now on')
