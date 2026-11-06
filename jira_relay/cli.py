@@ -1,12 +1,11 @@
 """jira-relay command line."""
 import argparse
-import json
 import signal
 import sys
 import time
 
 from . import __version__, admin, config
-from .gateway import service
+from .gateway import http
 from .jira import JiraError
 from .tracker import hub, ops, outbounds
 from .tracker.poll import log
@@ -80,16 +79,18 @@ def cmd_run(cfg: config.Config, args) -> int:
         time.sleep(max(1.0, (args.interval or cfg.interval) - (time.monotonic() - started)))
 
 
-def cmd_agent(cfg: config.Config, args) -> int:
-    """Agent request from bin/jira (JSON on stdin) -> JSON reply on stdout. Does not block the poll cycle.
+def cmd_serve(cfg: config.Config, args) -> int:
+    """The agent gateway over HTTPS (gateway/http.py): the container process of the gateway service."""
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    return http.serve(cfg, args.bind, args.port)
 
-    --user is a registered login, resolved by the caller (never taken from the request JSON)."""
-    try:
-        reply = service.serve(cfg, args.user, json.load(sys.stdin))
-    except ValueError as e:
-        reply = {'ok': False, 'error': f'request is not JSON: {e}', 'version': __version__}
-    json.dump(reply, sys.stdout, ensure_ascii=False)
-    return 0 if reply['ok'] else 1
+
+def cmd_tls(cfg: config.Config, args) -> int:
+    cert = cfg.tls_dir / 'cert.pem'
+    if not cert.exists():
+        raise config.ConfigError(f'no certificate {cert}: it is generated when the gateway container starts')
+    print(f'SHA-256 {http.fingerprint(cert)}')
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -155,9 +156,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     admin.add_parsers(sub)
 
-    agent_cmd = sub.add_parser('agent', help='agent request from bin/jira: JSON on stdin, JSON reply on stdout')
-    agent_cmd.add_argument('--user', default='', help='the registered login the request is from')
-    agent_cmd.set_defaults(handler=cmd_agent)
+    serve = sub.add_parser('serve', help='the agent gateway over HTTPS (the container process)')
+    serve.add_argument('--bind', default='0.0.0.0')
+    serve.add_argument('--port', type=int, default=8443)
+    serve.set_defaults(handler=cmd_serve)
+
+    sub.add_parser('tls', help="the gateway certificate's SHA-256 fingerprint: users compare it at jira setup") \
+        .set_defaults(handler=cmd_tls)
     return parser
 
 

@@ -1,12 +1,17 @@
 """Agent gateway: an agent request (as bin/jira sends it) → reply, Jira calls, journal, watching."""
+import io
 import json
 import tempfile
+import threading
 import unittest
+from contextlib import redirect_stdout
+from http.client import HTTPConnection
 from pathlib import Path
 from unittest import mock
 
+from jira_relay import config
 from jira_relay.config import Config, Outbound, Site
-from jira_relay.gateway import auth, commands, service
+from jira_relay.gateway import auth, commands, http, service
 from jira_relay.gateway.journal import Journal
 from jira_relay.jira import JiraError, PatAuth
 from jira_relay.tracker import hub
@@ -266,6 +271,52 @@ class SitesTest(GatewayCase):
         self.assertIn('other        https://jira.other.example.com  (your token set)', out)
         self.assertIn('you: bob; agent scratch', out)
         self.assertIn('watch to: team:…, me:…', out)
+
+
+class HttpTest(GatewayCase):
+    """The HTTPS gateway over plain HTTP on localhost: registration, the Bearer token, the agent request."""
+
+    def setUp(self):
+        super().setUp()
+        self.patch(config, 'load', lambda directory=None: self.cfg)
+        self.patch(http, 'MAKE_JIRA', self.make_jira)
+        self.server = http.make_server('127.0.0.1', 0, None)
+        self.addCleanup(self.server.server_close)
+        self.out = io.StringIO()
+        thread = threading.Thread(target=lambda: self.serve_quietly(), daemon=True)
+        thread.start()
+        self.addCleanup(self.server.shutdown)
+
+    def serve_quietly(self):
+        with redirect_stdout(self.out):
+            self.server.serve_forever(poll_interval=0.05)
+
+    def call(self, method, path, body=None, token=''):
+        conn = HTTPConnection('127.0.0.1', self.server.server_address[1], timeout=5)
+        headers = {'Authorization': f'Bearer {token}'} if token else {}
+        conn.request(method, path, json.dumps(body).encode() if body is not None else None, headers)
+        response = conn.getresponse()
+        return response.status, json.loads(response.read())
+
+    def test_register_then_agent(self):
+        status, reply = self.call('POST', '/register', {'site': 'main', 'token': 'bad-one'})
+        self.assertEqual(status, 400)
+        self.assertNotIn('bad-one', reply['error'])
+        status, reply = self.call('POST', '/register', {'token': 'carol-pat'})  # the default site
+        self.assertEqual((status, reply['ok'], reply['login']), (200, True, 'carol'))
+        token = reply['token']
+
+        self.assertEqual(self.call('POST', '/agent', {'as': 'x', 'argv': ['sites']})[0], 401)
+        self.assertEqual(self.call('POST', '/agent', {'as': 'x', 'argv': ['sites']}, token='nope')[0], 401)
+        status, reply = self.call('POST', '/agent', {'as': 'backend', 'argv': ['sites']}, token=token)
+        self.assertEqual(status, 200)
+        self.assertIn('you: carol; agent backend', reply['out'])
+        self.assertIn('main         https://jira.example.com  (your token set)', reply['out'])
+        self.assertEqual(self.call('GET', '/version')[1]['version'], reply['version'])
+        log = self.out.getvalue()
+        self.assertNotIn(token, log)
+        self.assertNotIn('carol-pat', log)
+        self.assertIn('POST /agent carol 200', log)
 
 
 if __name__ == '__main__':

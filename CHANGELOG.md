@@ -20,6 +20,10 @@ Written for people and agents: what changed in behavior, not which files were to
   tokens, grouped by watcher. A rejected token hands the issues to the next watcher; an issue none of them can read
   gets one "tracking paused" note (slug `<key>-paused`) and waits for a watcher to register again. Host commands
   that read Jira take `--by LOGIN` (`add` requires it).
+- The gateway is an HTTPS service (`jira-relay serve`, port 8443 in the container): `POST /register` with a Jira
+  token, `POST /agent` with the service token as `Authorization: Bearer`. `jira-relay agent` over ssh and
+  `docker exec` are gone, users no longer need an account or the docker group on the host. The certificate is
+  self-signed, generated at the first start; `jira-relay tls` prints its fingerprint for users to compare.
 
 ## [0.5.0] — 2026-11-05
 

@@ -3,6 +3,7 @@
     <data>/config/jira-relay.toml        what is connected: Jira sites and outbounds
     <data>/secrets/outbound/<name>/      outbound credentials (xchg: ssh_key)
     <data>/secrets/users/<login>/<site>  a user's own Jira secret, saved at registration (gateway/auth.py)
+    <data>/secrets/tls/{cert,key}.pem    the gateway's TLS certificate, self-signed (docker/entrypoint.sh)
     <data>/state/                        tracker state, registered users and the gateway journal
 
 The data directory is JIRA_RELAY_DATA (in the container /data). The file is written by `jira-relay jira|outbound`
@@ -88,6 +89,10 @@ class Config:
 
     def user_secret_path(self, login: str, site: str) -> Path:
         return self.secrets_dir / 'users' / login / site
+
+    @property
+    def tls_dir(self) -> Path:
+        return self.secrets_dir / 'tls'
 
     def outbound_dir(self, name: str) -> Path:
         return self.secrets_dir / 'outbound' / name

@@ -1,4 +1,5 @@
-"""Agent gateway to Jira: `jira-relay agent` (entry point: service.py). Reaches the tracker only through tracker/api.py."""
+"""Agent gateway to Jira: `jira-relay serve` (http.py → service.py → commands.py). Reaches the tracker only through
+tracker/api.py."""
 
 
 class AgentError(Exception):

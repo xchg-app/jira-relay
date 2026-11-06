@@ -11,12 +11,12 @@ ARG XCHG_REF=9f7760c09977c16d8b10da2ca1cac51671d089ba
 ARG APP_UID=1000
 ARG APP_GID=1000
 
-# xchg is a bash script on top of git, awk, sed and coreutils
+# xchg is a bash script on top of git, awk, sed and coreutils; openssl makes the gateway's self-signed certificate
 RUN release="v$(cut -d. -f1,2 /etc/alpine-release)" \
  && if [ -n "$ALPINE_MIRROR" ]; then \
       printf '%s/%s/main\n%s/%s/community\n' "$ALPINE_MIRROR" "$release" "$ALPINE_MIRROR" "$release" > /etc/apk/repositories; \
     fi \
- && apk add --no-cache git bash coreutils openssh-client \
+ && apk add --no-cache git bash coreutils openssh-client openssl \
  && git clone -q https://github.com/xchg-app/xchg.git /opt/xchg \
  && git -C /opt/xchg checkout -q "$XCHG_REF" \
  && git config --system --add safe.directory '*'

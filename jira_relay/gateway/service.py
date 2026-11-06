@@ -1,4 +1,4 @@
-"""Gateway entry point: an agent request from bin/jira (JSON) → reply (JSON-compatible dict).
+"""Gateway entry point: an agent request from bin/jira (JSON, delivered by http.py) → reply (JSON-compatible dict).
 
 login is who the request is from: a registered user (gateway/auth.py), never taken from the request JSON. Jira uses
 the user's own secret per site, watching goes through the tracker, the journal is the gateway's own.

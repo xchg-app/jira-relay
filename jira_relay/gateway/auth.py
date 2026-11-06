@@ -87,7 +87,7 @@ def register(cfg: config.Config, site: str, jira_token: str, make_jira=Jira) -> 
     try:
         login = make_jira(s.url, make_auth(s.auth, jira_token)).whoami()
     except JiraError as e:
-        raise AgentError(f'{s.name} rejected the token ({e})') from None
+        raise AgentError(f'{s.name} rejected the token ({str(e).replace(jira_token, "«hidden: token»")})') from None
     try:
         config.check_login(login)
     except config.ConfigError as e:
