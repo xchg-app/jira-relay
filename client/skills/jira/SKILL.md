@@ -4,9 +4,9 @@ description: Jira (Server/DC) through a jira-relay service — read an issue, se
 ---
 # Jira through jira-relay
 
-You read and change Jira through a jira-relay service on a host your human can ssh to. You have no Jira token and
-need none. The service recognizes your human by their account on that host; Jira actions come from their Jira account
-(or the service account, if they are the jira-relay admin).
+You read and change Jira through a jira-relay service over HTTPS. You have no Jira token and need none: your human
+registered with the service using their Jira token, and the client carries the service token it got. Everything you
+do in Jira is done from your human's Jira account.
 
 Everything goes through the `jira` client. If `jira` isn't on `PATH`, run it by its path: `bin/jira` two levels above
 this skill's directory. Call it without variables or `cd`: this way Claude Code recognizes read commands by their
@@ -21,26 +21,26 @@ prefix and does not ask about them.
 - Write issues briefly and human-readably: the problem and, if any, the proposed solution. Implementation details
   and code names only if your human asks.
 - The service adds the "— agent <name>" signature itself; do not put it in the text.
-- Never write secrets, passwords or tokens to Jira. Never handle the Jira token: your human runs `token set` themselves,
-  in their own terminal.
+- Never write secrets, passwords or tokens to Jira. Never handle the Jira token: your human runs `jira register`
+  (and `token set` for another site) themselves, in their own terminal; the client refuses to take it from you.
 
 ## Start
 
 ```bash
-jira sites --as backend      # Jira sites, your human's token per site, what you may change, where you may watch to
+jira sites --as backend      # Jira sites, your human's token per site, where you may watch to
 ```
 
 - `--as <name>` is your project name, as in xchg (`xchg agent` → `team:@backend:alice` → `backend`); it can go
-  anywhere in the command. Any agent can read and watch; only an agent registered under your human in jira-relay can
-  change, and only its own projects (`main/DEMO` — one project, `main/*` — a whole site, `*` — everything). If you are
-  not registered, the service refuses: ask your human to have the jira-relay admin add you.
-- `the jira-relay host is not set` — ask your human where jira-relay runs; they run `jira setup HOST` once.
+  anywhere in the command. Any agent of a registered human reads, changes and watches; what your human may change
+  in Jira, you may change — the signature and the journal tell who did it.
+- `the jira-relay service is not set` / `not registered` — your human does it once, in their terminal:
+  `jira setup https://HOST:8443` (the admin tells the URL and the certificate fingerprint), then `jira register`.
 
 ## Jira sites
 
 The service may know several Jira sites by name (`jira sites`). An issue is `DEMO-42` or `main/DEMO-42`. A key without
 a site (and `search`, `api`, `create DEMO`, `token`) goes to the site from `--jira NAME` (anywhere in the command),
-else to your agent's site if all its projects are on one site, else to the default site (marked `*`). The same key on
+else to the default site (marked `*`). The same key on
 two sites is two different issues. `link` connects issues of one site only.
 
 ## How
@@ -50,7 +50,7 @@ jira get DEMO-42 --as backend                # fields, description, comments, li
 jira get other/DEMO-42 --as backend          # an issue on another site
 jira search 'project = DEMO AND status = Review' --limit 20 --as backend
 jira transitions DEMO-42 --as backend        # where it can be moved
-jira watching --as backend                   # what is watched and where
+jira watching --as backend                   # what is watched, where, and by whom
 jira log --since 7d --as backend             # what this agent changed; --all for everyone
 jira --help                                  # and `jira <command> --help`
 ```
@@ -82,7 +82,7 @@ Watching (also only on your human's command): issue changes arrive as notes in a
 jira watch DEMO-42 team:@backend --as backend                  # snapshot now, changes afterwards
 jira watch DEMO-42 team:@backend:alice --with-subtasks --as backend
 jira watch DEMO-42 team:@backend --dry-run --as backend        # show the snapshot, send nothing
-jira unwatch DEMO-42 team:@backend:alice --as backend          # remove an address; without one, stop entirely
+jira unwatch DEMO-42 team:@backend:alice --as backend          # leave that address; without one, all of yours
 jira subtasks DEMO-42 on --as backend                          # pick up subtasks
 ```
 
@@ -90,25 +90,30 @@ jira subtasks DEMO-42 on --as backend                          # pick up subtask
   backticks alone. Markup is Jira Server wiki (`*bold*`, `{code}…{code}`), not Markdown.
 - `get` prints the issue in the same format as snapshots in the hub.
 - After `link` the service prints the link the way Jira shows it — check the direction.
-- `watch`: the address is `hub[:@project][:person]`; the hub must be one your human may use (`jira sites`); only the
-  jira-relay admin connects a new hub. Without an address, the agent's default from the jira-relay config is used, if
-  it has one. Any Jira issue can be watched, and any watch can be removed, including someone else's.
+- `watch`: the address is `hub[:@project][:person]` and is always given — ask your human where the updates should go
+  if they did not say. The hubs are those the admin connected (`jira sites`). If someone already watches the issue
+  there, your human joins the watchers: no second snapshot, one note per change for everyone. `unwatch` only takes
+  your human off the watchers; the address stays while someone else watches there. Watching is polled with the
+  watchers' own Jira tokens: an issue your human cannot see in Jira cannot be watched by them.
 
 ## Not allowed
 
 - Any `DELETE`: deleting an issue, comment or link is done only by people, in Jira.
 - `api POST/PUT` outside issues, links, search, versions, components, filters and agile (sprint, backlog, epic):
   administration, permissions, users, schemes.
-- Changing issues of projects that are not yours.
+- Changing anything your human did not ask for.
 
 ## When it does not work
 
-- `ssh to HOST failed` / `ssh-agent is not running` — your human's ssh key is not available: tell them and retry later.
+- `cannot reach the jira-relay service` / `replied with non-JSON` — the service is down or unreachable (office
+  network?). Tell your human; do not fix it yourself.
+- `the certificate of … changed` — stop and tell your human: either the admin reissued it (they rerun `jira setup`)
+  or something is in between.
+- `not registered` / `service token was revoked` — your human runs `jira register` in their terminal (a Jira token
+  renewed in Jira is registered the same way).
 - `has no Jira token for <site>` — your human runs `jira token set --jira <site>` themselves (it asks for the token
-  without echoing it; `token status` / `token rm` take `--jira` too). The admin needs no token.
-- `is not registered` — your human asks the jira-relay admin to add them.
+  without echoing it; `token status` / `token rm` take `--jira` too).
 - `unknown Jira site` — the error lists the configured sites; use one of them.
-- `service replied with non-JSON` — the jira-relay service is down. Tell your human; do not fix it yourself.
 - `jira-relay service is X, but this client is Y` — the plugin is outdated: tell your human to update it. You can
   keep working, but you do not know the new commands and rules.
 - Timeout — the change may have gone through: check `jira log --since 1h --as …` before retrying.

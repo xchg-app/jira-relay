@@ -49,25 +49,42 @@ class JiraRetryTest(unittest.TestCase):
 
 
 class AgentClientTest(unittest.TestCase):
-    def test_setup_writes_settings_read_back(self):
+    def test_setup_pins_register_saves_token(self):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {'XDG_CONFIG_HOME': tmp}):
-            os.environ.pop('JIRA_RELAY_HOST', None)
-            os.environ.pop('JIRA_RELAY_CONTAINER', None)
+            os.environ.pop('JIRA_RELAY_URL', None)
+            os.environ.pop('JIRA_RELAY_TOKEN', None)
             loader = importlib.machinery.SourceFileLoader('jira_client', str(ROOT / 'client' / 'bin' / 'jira'))
             client = importlib.util.module_from_spec(importlib.util.spec_from_loader('jira_client', loader))
             loader.exec_module(client)
 
             self.assertEqual(client.VERSION, jira_relay.__version__)  # released together
             self.assertEqual(client.CONFIG, Path(tmp) / 'jira-relay' / 'client.conf')
-            self.assertEqual(client.load_settings(), {'container': client.CONTAINER})
+            self.assertEqual(client.load_settings(), {})
 
-            with redirect_stdout(io.StringIO()):
-                self.assertEqual(client.setup(['devhost', '--container', 'relay']), 0)
-            self.assertEqual(client.load_settings(), {'host': 'devhost', 'container': 'relay'})
-            with mock.patch.dict(os.environ, {'JIRA_RELAY_HOST': 'otherhost'}):
-                self.assertEqual(client.load_settings()['host'], 'otherhost')  # the environment wins
-            with mock.patch('sys.stderr', io.StringIO()):
-                self.assertEqual(client.setup(['--container', 'x']), 1)
+            def connect(url, pinned):  # the service's certificate is AA; a different pin is refused
+                if pinned and pinned != 'AA':
+                    raise client.ServiceError('the certificate changed')
+                return mock.Mock(), 'AA'
+            replies = {'/version': {'version': client.VERSION},
+                       '/register': {'ok': True, 'login': 'alice', 'token': 'service-token'}}
+
+            def call(settings, method, path, body=None, token=''):
+                conn, settings['fingerprint'] = connect(settings['url'], settings.get('fingerprint', ''))
+                return replies[path]
+            url = 'https://relay.example.com:8443'
+            with mock.patch.object(client, 'connect', connect), mock.patch.object(client, 'call', call), \
+                    redirect_stdout(io.StringIO()), mock.patch('sys.stderr', io.StringIO()):
+                self.assertEqual(client.setup([url]), 0)
+                self.assertEqual(client.load_settings(), {'url': url, 'fingerprint': 'AA'})
+                self.assertEqual(client.setup([url, '--fingerprint', 'BB']), 1)  # the admin said BB: refused
+                self.assertEqual(client.register([]), 1)  # not a terminal: the token is not read
+                with mock.patch('sys.stdin.isatty', return_value=True), \
+                        mock.patch.object(client.getpass, 'getpass', return_value='jira-pat'):
+                    self.assertEqual(client.register(['--jira', 'main']), 0)
+            self.assertEqual(client.load_settings(), {'url': url, 'fingerprint': 'AA', 'token': 'service-token'})
+            self.assertEqual(oct(client.CONFIG.stat().st_mode & 0o777), '0o600')
+            with mock.patch.dict(os.environ, {'JIRA_RELAY_URL': 'https://other'}):
+                self.assertEqual(client.load_settings()['url'], 'https://other')  # the environment wins
 
 
 if __name__ == '__main__':

@@ -14,6 +14,7 @@ the service runs.
 import hashlib
 import json
 import ssl
+import sys
 import threading
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -119,9 +120,16 @@ class Handler(BaseHTTPRequestHandler):
         self._json(200, reply, login)
 
 
-def make_server(bind: str, port: int, context: ssl.SSLContext | None) -> ThreadingHTTPServer:
-    server = ThreadingHTTPServer((bind, port), Handler)
-    server.daemon_threads = True
+class Server(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def handle_error(self, request, client_address):
+        """A client that drops the connection (TLS probe, a timeout) is one log line, not a traceback."""
+        log(f'{client_address[0]}: dropped: {sys.exc_info()[1]}')
+
+
+def make_server(bind: str, port: int, context: ssl.SSLContext | None) -> Server:
+    server = Server((bind, port), Handler)
     if context:
         server.socket = context.wrap_socket(server.socket, server_side=True)
     return server

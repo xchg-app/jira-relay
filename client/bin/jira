@@ -1,31 +1,36 @@
 #!/usr/bin/env python3
-"""Jira for agents, through a jira-relay service over ssh. Stdlib only.
+"""Jira for agents, through a jira-relay service over HTTPS. Stdlib only.
 
     jira get DEMO-42 --as backend
     jira comment DEMO-42 --as backend <<'TXT'
     Fixed the export, ready to check.
     TXT
     jira --help
-    jira setup HOST [--container NAME]     # once: where the service runs (saved in ~/.config/jira-relay/client.conf)
+    jira setup https://jira-relay.example.com:8443   # once: where the service is; pins its certificate
+    jira register [--jira SITE]                      # once, by the human: their Jira token → a service token
 
 Read freely, change only on your human's command (skills/jira/SKILL.md). The service parses commands: this client only
-builds the request (arguments, text from stdin, files for attach) and delivers it over ssh. ssh-agent:
-JIRA_SSH_AUTH_SOCK, else ~/.ssh/agent.sock if it exists (started each morning), else plain ssh.
-Host and container: JIRA_RELAY_HOST / JIRA_RELAY_CONTAINER, else `jira setup`. The user is your account on that host:
-ssh under your own login, the docker group is required; the service checks the login against its user list.
+builds the request (arguments, text from stdin, files for attach) and delivers it. Settings live in
+~/.config/jira-relay/client.conf (url, fingerprint, token; mode 0600) or JIRA_RELAY_URL / JIRA_RELAY_TOKEN.
+The service's certificate is self-signed: `jira setup` remembers its SHA-256 fingerprint (trust on first use, like
+ssh), every request checks it; the admin announces the fingerprint (`jira-relay tls`) so the human can compare.
+The service token identifies the human: the service never takes a login from the request.
 """
 import base64
 import getpass
+import hashlib
 import json
 import os
 import select
-import subprocess
+import ssl
 import sys
+from http.client import HTTPException, HTTPSConnection
 from pathlib import Path
+from urllib.parse import urlsplit
 
 CONFIG = Path(os.environ.get('XDG_CONFIG_HOME', '~/.config')).expanduser() / 'jira-relay' / 'client.conf'
-CONTAINER = 'jira-relay-jira-relay-1'  # docker compose default for the project directory "jira-relay"
 VERSION = '0.5.0'  # jira-relay version this client and skill came with; set by bin/release
+TIMEOUT = 180
 
 
 def parse_version(value) -> tuple[int, ...]:
@@ -43,7 +48,7 @@ def warn_if_outdated(service: str | None) -> None:
 
 
 def load_settings() -> dict:
-    """client.conf (key=value), overridden by JIRA_RELAY_HOST / JIRA_RELAY_CONTAINER."""
+    """client.conf (key=value), overridden by JIRA_RELAY_URL / JIRA_RELAY_TOKEN."""
     settings = {}
     try:
         for line in CONFIG.read_text().splitlines():
@@ -52,32 +57,134 @@ def load_settings() -> dict:
                 settings[key.strip()] = value.strip()
     except OSError:
         pass
-    for key, env in (('host', 'JIRA_RELAY_HOST'), ('container', 'JIRA_RELAY_CONTAINER')):
+    for key, env in (('url', 'JIRA_RELAY_URL'), ('token', 'JIRA_RELAY_TOKEN')):
         if os.environ.get(env):
             settings[key] = os.environ[env]
-    settings.setdefault('container', CONTAINER)
     return settings
 
 
-def setup(args: list[str]) -> int:
-    """`jira setup HOST [--container NAME]`: local, nothing goes to the service."""
-    usage = 'usage: jira setup HOST [--container NAME]  (HOST: an ssh host or alias where jira-relay runs)'
-    if not args or args[0].startswith('-'):
-        return fail(usage)
-    host, container = args[0], CONTAINER
-    if args[1:2] == ['--container'] and len(args) == 3:
-        container = args[2]
-    elif len(args) != 1:
-        return fail(usage)
+def save_settings(settings: dict) -> None:
     CONFIG.parent.mkdir(parents=True, exist_ok=True)
-    CONFIG.write_text(f'host={host}\ncontainer={container}\n')
-    print(f'jira: saved to {CONFIG}; check with: jira sites --as <your project>')
-    return 0
+    fd = os.open(CONFIG, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, 'w') as handle:
+        handle.write(''.join(f'{k}={v}\n' for k, v in settings.items() if v))
 
 
 def fail(message: str) -> int:
     print(f'jira: {message}', file=sys.stderr)
     return 1
+
+
+class ServiceError(Exception):
+    pass
+
+
+def fingerprint(der: bytes) -> str:
+    digest = hashlib.sha256(der).hexdigest().upper()
+    return ':'.join(digest[i:i + 2] for i in range(0, len(digest), 2))
+
+
+def connect(url: str, pinned: str) -> tuple[HTTPSConnection, str]:
+    """TLS to the service; the certificate must match the pinned fingerprint (empty: first use, returned)."""
+    parts = urlsplit(url)
+    if parts.scheme != 'https' or not parts.hostname:
+        raise ServiceError(f'the service URL must be https://host[:port] (got {url})')
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.check_hostname, context.verify_mode = False, ssl.CERT_NONE  # a self-signed certificate: pinned instead
+    conn = HTTPSConnection(parts.hostname, parts.port or 443, context=context, timeout=TIMEOUT)
+    try:
+        conn.connect()
+    except (OSError, HTTPException) as e:
+        raise ServiceError(f'cannot reach the jira-relay service at {url}: {e}') from None
+    seen = fingerprint(conn.sock.getpeercert(binary_form=True))
+    if pinned and seen.replace(':', '').casefold() != pinned.replace(':', '').casefold():
+        conn.close()
+        raise ServiceError(f'the certificate of {url} changed: SHA-256 {seen}, pinned {pinned}. If the admin '
+                           f'reissued it, run `jira setup {url}` again; otherwise do not continue')
+    return conn, seen
+
+
+def call(settings: dict, method: str, path: str, body=None, token: str = '') -> dict:
+    """One request. Without a pinned fingerprint (setup) the certificate seen is put into the settings."""
+    url = settings.get('url')
+    if not url:
+        raise ServiceError('the jira-relay service is not set: ask your human where it runs, then jira setup URL')
+    conn, settings['fingerprint'] = connect(url, settings.get('fingerprint', ''))
+    headers = {'Content-Type': 'application/json'}
+    if token:
+        headers['Authorization'] = f'Bearer {token}'
+    try:
+        conn.request(method, path, json.dumps(body, ensure_ascii=False).encode() if body is not None else None, headers)
+        response = conn.getresponse()
+        raw = response.read()
+    except TimeoutError:
+        raise ServiceError(f'{url} did not answer in {TIMEOUT} s; a change may have gone through — '
+                           f'check: jira log --since 1h') from None
+    except (OSError, HTTPException) as e:
+        raise ServiceError(f'{url}: {e}') from None
+    finally:
+        conn.close()
+    try:
+        reply = json.loads(raw)
+    except ValueError:
+        raise ServiceError(f'{url} replied with non-JSON ({response.status}): is that the jira-relay gateway?') from None
+    warn_if_outdated(reply.get('version'))
+    return reply
+
+
+def setup(args: list[str]) -> int:
+    """`jira setup URL [--fingerprint SHA256]`: pins the service certificate and checks the service answers."""
+    usage = 'usage: jira setup https://HOST[:PORT] [--fingerprint SHA256]  (the jira-relay gateway; port 8443 by default)'
+    if not args or args[0].startswith('-'):
+        return fail(usage)
+    url, expected = args[0].rstrip('/'), ''
+    if args[1:2] == ['--fingerprint'] and len(args) == 3:
+        expected = args[2]
+    elif len(args) != 1:
+        return fail(usage)
+    settings = load_settings()
+    # the fingerprint to check: the given one, else the pinned one of the same URL (a change is reported, not adopted)
+    pin = expected or (settings.get('fingerprint', '') if settings.get('url') == url else '')
+    settings.update(url=url, fingerprint=pin)
+    try:
+        reply = call(settings, 'GET', '/version')
+    except ServiceError as e:
+        return fail(str(e))
+    save_settings(settings)
+    seen = settings['fingerprint']
+    print(f'jira: {url} is jira-relay {reply.get("version")}, certificate SHA-256 {seen}\n'
+          f'jira: saved to {CONFIG}. Compare the fingerprint with what the jira-relay admin announced; '
+          f'then register: jira register')
+    return 0
+
+
+def register(args: list[str]) -> int:
+    """`jira register [--jira SITE]`: the human's Jira token → the service token. Only in a terminal: the token is
+    typed, never passed by an agent."""
+    site = ''
+    if args[:1] == ['--jira'] and len(args) == 2:
+        site = args[1]
+    elif args:
+        return fail('usage: jira register [--jira SITE]')
+    if not sys.stdin.isatty():
+        return fail('register is done by your human in their own terminal: it asks for their Jira token')
+    settings = load_settings()
+    if not settings.get('url'):
+        return fail('the jira-relay service is not set: jira setup URL first')
+    token = getpass.getpass('Jira Personal Access Token (hidden): ').strip()
+    if not token:
+        return fail('no token given')
+    try:
+        reply = call(settings, 'POST', '/register', {'site': site, 'token': token})
+    except ServiceError as e:
+        return fail(str(e))
+    if not reply.get('ok'):
+        return fail(reply.get('error') or 'registration refused')
+    settings['token'] = reply['token']
+    save_settings(settings)
+    print(f'jira: registered as {reply["login"]}; the service token is in {CONFIG}. Agents can work now: '
+          f'jira sites --as <project>')
+    return 0
 
 
 def read_stdin() -> str:
@@ -109,6 +216,8 @@ def main() -> int:
         argv = ['--help']
     if argv[:1] == ['setup']:
         return setup(argv[1:])
+    if argv[:1] == ['register']:
+        return register(argv[1:])
     if argv == ['--version']:
         print(f'jira {VERSION}')
         return 0
@@ -134,34 +243,13 @@ def main() -> int:
         text = '' if help_only else read_stdin()
     request = {'as': name, 'argv': argv, 'text': text, 'files': files}
 
-    env = dict(os.environ)
-    sock = os.path.expanduser(os.environ.get('JIRA_SSH_AUTH_SOCK', '~/.ssh/agent.sock'))
-    if Path(sock).is_socket():
-        env['SSH_AUTH_SOCK'] = sock
-    elif 'JIRA_SSH_AUTH_SOCK' in os.environ:
-        return fail(f'ssh-agent is not running: no socket {sock}. Ask your human to start ssh-agent, then retry')
     settings = load_settings()
-    host, container = settings.get('host'), settings['container']
-    if not host:
-        return fail('the jira-relay host is not set: ask your human where jira-relay runs, then jira setup HOST')
-    command = f'docker exec -i {container} jira-relay agent --user "$(id -un)"'
+    if not settings.get('token'):
+        return fail('not registered with the jira-relay service: your human runs `jira register` in their terminal')
     try:
-        done = subprocess.run(
-            ['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=15', host, command],
-            input=json.dumps(request, ensure_ascii=False).encode(), capture_output=True, timeout=180,
-            env=env,
-        )
-    except subprocess.TimeoutExpired:
-        return fail(f'{host} did not answer in 180 s; the change may have gone through — check: jira --as {name} log --since 1h')
-    stderr = done.stderr.decode(errors='replace').strip()
-    if done.returncode == 255:
-        return fail(f'ssh to {host} failed ({stderr.splitlines()[-1] if stderr else "no message"}). '
-                    f'Is ssh-agent running with the key registered in jira-relay ({sock})?')
-    try:
-        reply = json.loads(done.stdout)
-    except ValueError:
-        return fail(f'service replied with non-JSON (is the jira-relay container running?): {stderr or done.stdout[:300]!r}')
-    warn_if_outdated(reply.get('version'))
+        reply = call(settings, 'POST', '/agent', request, token=settings['token'])
+    except ServiceError as e:
+        return fail(str(e))
     if reply.get('ok'):
         out = reply.get('out') or ''
         print(out, end='' if out.endswith('\n') else '\n')

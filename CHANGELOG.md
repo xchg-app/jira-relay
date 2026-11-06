@@ -24,6 +24,10 @@ Written for people and agents: what changed in behavior, not which files were to
   token, `POST /agent` with the service token as `Authorization: Bearer`. `jira-relay agent` over ssh and
   `docker exec` are gone, users no longer need an account or the docker group on the host. The certificate is
   self-signed, generated at the first start; `jira-relay tls` prints its fingerprint for users to compare.
+- The client: `jira setup https://HOST:8443` pins the certificate (trust on first use; `--fingerprint` to check the
+  announced one), `jira register [--jira SITE]` asks the human for their Jira token in the terminal and keeps the
+  service token in `client.conf` (0600). No ssh, no ssh-agent. The skill: addresses for `watch` are always given;
+  `watching` shows who watches; `unwatch` leaves the watchers.
 
 ## [0.5.0] — 2026-11-05
 
