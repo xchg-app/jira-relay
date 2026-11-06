@@ -31,16 +31,19 @@ tags: [memory/repo, gotcha]
   a screen Jira answers "Field 'comment' cannot be set".
 - **Writes are not retried** (`Jira.write`): a timeout does not mean Jira did not perform it. Only GETs are retried.
 - `X-Atlassian-Token: no-check` is mandatory for attachment uploads, otherwise 403 (XSRF).
-- `jira-relay agent` does not take the cycle's `flock`: it writes to Jira, bypassing the outbounds. The journal is in
-  the same sqlite, hence `sqlite3.connect(timeout=30)`.
+- The gateway does not take the cycle's `flock` for Jira writes (only `watch`/`unwatch` do, through `tracker/api.py`).
+  The journal and the users are in the same sqlite as the tracker state, hence `sqlite3.connect(timeout=30)`.
+- **Gateway requests are served one at a time** (`Handler.lock`): `tracker/api.py` captures the tracker's prints with
+  `redirect_stdout`, which swaps the process-wide `sys.stdout`. Threads only keep a slow client from blocking the port.
 - Agents' changes to tracked issues come back to the hub as a regular change note (author: the user's Jira account,
   with the agent's signature in the text). This is expected.
-- **The user is the account on the service host, not the request JSON.** The client passes `--user "$(id -un)"`, the
-  substitution runs on the host. Do not move it into the JSON: the agent would write it itself and could get it wrong,
-  while the account cannot be mixed up. A call can be forged deliberately; there is no forced-command key (a user's
-  ssh key opens a shell on the host anyway).
-- Everyone in the host's `docker` group can reach the service secrets in the container. User separation protects
-  against agents' mistakes, not against people with docker.
+- **The user comes from the service token, not the request JSON.** Registration verifies the Jira token with
+  `/rest/api/2/myself`, so nobody becomes somebody else; an agent never sees the Jira token and cannot get the login
+  wrong. Do not add a login field to the request.
+- **The certificate is self-signed and pinned by fingerprint** (`jira setup`, trust on first use). Reissuing it
+  (deleting `/data/secrets/tls`) breaks every client until each user reruns `jira setup`; announce the new fingerprint.
+- A Jira token that expires or is revoked does not stop the gateway: Jira answers 401 to the user's requests, and the
+  poller pauses their issues with one note. Registering again replaces both tokens.
 - The client waits for stdin no longer than a second: agents sometimes have stdin open and empty, without this the
   command would hang.
 
@@ -76,7 +79,7 @@ tags: [memory/repo, gotcha]
   jira-bot"). That is why each xchg outbound has its own `login`, and `hub.connect` reconnects the hub when the login
   changes (`xchg hub rm` + `hub add`: the clone stays, the config changes).
 
-## Docker and ssh
+## Docker
 
 - **Each hub has its own write key**, set on the hub clone via `core.sshCommand`
   (`ssh -i <key> -o IdentitiesOnly=yes -o UserKnownHostsFile=<known_hosts>`). Do not set `GIT_SSH_COMMAND` in the
@@ -103,7 +106,8 @@ tags: [memory/repo, gotcha]
   deployment chains run in parallel. A `docker run --rm` whose client was killed leaves the container running.
 - In `ssh HOST '…'` do not put `set -e` before commands that are expected to fail in a check: it aborts everything,
   cleanup included.
-- The client's ssh runs with `BatchMode=yes`: a missing or locked key fails fast instead of prompting inside an agent.
+- **`ports:` in compose bypasses ufw/iptables rules of the host**: docker inserts its own forwarding rules first. Bind
+  the gateway port to the office-network address (`JIRA_RELAY_BIND` in `.env`), not to `0.0.0.0`.
 
 ## Development
 

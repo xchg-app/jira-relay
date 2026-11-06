@@ -9,42 +9,49 @@ A self-hosted bridge between Jira Server/DC and coding agents, in both direction
   each user acts with their own Jira account, every change is made only on the human's command, signed by the agent
   and journaled.
 
-Agents never hold Jira tokens: the tokens stay in the service's data volume; agents reach it over ssh as their human.
+Agents never hold Jira tokens: a user registers once with their Jira token, which stays in the service's data volume,
+and agents reach the service over HTTPS with the service token the client keeps.
 
 Architecture, note schema and the gateway's rules: [docs/design.md](docs/design.md).
 
 ## Install the service
 
-A docker host your users can ssh to (their agents call the service as `docker exec` over ssh, so users need to be in
-the `docker` group there). In a clone of this repository:
+A docker host your users can reach over the network on one port (the gateway, HTTPS). In a clone of this repository:
 
 ```bash
 cat > .env <<'EOF'            # host-specific values, outside git (full list at the top of compose.yaml)
 APP_UID=1000                  # uid/gid that owns /data in the container
 APP_GID=1000
 BOT_EMAIL=jira-bot@example.com
+JIRA_RELAY_BIND=10.0.0.5      # the host address users reach; docker publishes the port past the firewall
+JIRA_RELAY_PORT=8443
 EOF
 docker compose up -d --build
-alias relay='docker compose exec -T jira-relay jira-relay'
+alias relay='docker compose exec -T tracker jira-relay'
 
-relay user add alice                                   # the first user becomes the admin
 relay jira add main https://jira.example.com           # a Jira site under a name you choose
-relay jira secret main < pat.txt                       # its service PAT: polling, snapshots and the admin's actions
 relay outbound add team --remote git@git.example.com:team/hub.git --login jira-bot   # an xchg hub
 relay outbound hostkey team < known_hosts              # the hub's host key (ssh-keyscan; verify the fingerprint)
 relay outbound key team < hub_write_key                # its write key; the hub is connected right away
-relay user agent alice backend --projects main/DEMO --watch-to team:@backend
+relay tls                                              # the gateway certificate's fingerprint: tell it to the users
 ```
 
-Everything lives in the data volume: `/data/config/jira-relay.toml` (readable and editable, schema in
-`jira_relay/config.py`) and `/data/secrets` (0600 files). The service rereads the config every cycle; no restart needed.
+Two services share one image and one data volume: `tracker` (polling and publishing) and `gateway` (the agents'
+port). Everything lives in the volume: `/data/config/jira-relay.toml` (readable and editable, schema in
+`jira_relay/config.py`), `/data/secrets` (0600 files) and `/data/state/state.db` (tracked issues, registered users).
+The config is reread every cycle and every request; no restart needed. There is no service account in Jira: users
+register with their own tokens, and each issue is polled with the token of a user who watches it.
 
 Updating goes to a release tag (rollback is the same step with the old tag):
 
 ```bash
-git fetch --tags && git checkout v0.4.0 && docker compose up -d --build
-docker compose logs --since 2m        # "jira-relay 0.4.0 started: …"
+git fetch --tags && git checkout v0.6.0 && docker compose up -d --build
+docker compose logs --since 2m        # "jira-relay 0.6.0 started: …", "… gateway on https://0.0.0.0:8443 …"
 ```
+
+Coming from 0.5: `users`, `admin` and agents leave the config file by themselves (the file is rewritten without
+them); every user registers (`jira register`); the admin's old addresses have no watcher yet — after registering,
+`relay user claim <login>` adopts them, otherwise they are paused at the next cycle.
 
 ## Install the client (each user)
 
@@ -57,56 +64,58 @@ The `jira` client and its skill come as a package for the user's coding agent:
 
 Any other agent with a shell: copy `client/bin/jira` somewhere on `PATH` and give it `client/skills/jira/SKILL.md`.
 
-Then once, in a terminal: `jira setup HOST` (an ssh host or alias where the service runs; `--container NAME` if it is
-not `jira-relay-jira-relay-1`), and, for non-admin users, `jira token set --jira main` with their own Jira personal
-access token (it is asked without echo and verified against Jira). `jira sites --as <project>` shows what is set up.
-The client warns when the service is newer than itself.
+Then once, in a terminal: `jira setup https://HOST:8443` (it pins the service certificate and prints its fingerprint:
+compare with what the admin announced, or pass `--fingerprint SHA256` to have it checked), then `jira register` with
+your Jira personal access token (asked without echo, verified against Jira; the login is what Jira says). A token for
+another site: `jira token set --jira other`. `jira sites --as <project>` shows what is set up. The client warns when
+the service is newer than itself.
 
 ## Admin commands
 
 ```bash
-relay jira ls | add NAME URL [--auth pat] | secret NAME < file | rm NAME
+relay jira ls | add NAME URL [--auth pat] | rm NAME
 relay outbound ls | add NAME --type xchg --remote URL --login BOT [--owner LOGIN] | key NAME < file
                | hostkey NAME < known_hosts | owner NAME [LOGIN] | rm NAME
-relay user ls | add LOGIN [--outbounds a,b] | outbounds LOGIN a,b | rm LOGIN
-          | agent LOGIN NAME --projects site/PROJ,... [--watch-to ADDR] [--remove]
+relay user ls | revoke LOGIN | claim LOGIN
+relay tls
 ```
 
 - A **Jira site** has a name; issues are `site/KEY` (`main/DEMO-42`), a bare key means the first site.
   Authentication is per site (`auth`); today `pat` (Server/DC personal access token).
 - An **outbound** is where changes go; an address is `outbound:target`. For xchg the target is `@project`, `person`,
-  `@project:person` or `all`. A shared outbound is available to the users listed with it (`--outbounds`), a personal
-  one (`--owner`) only to its owner; the admin may use all.
-- A **user** is an account on the service host (`id -un` over ssh) with the same login in Jira. An agent's `projects`
-  are where it may change Jira: `site/PROJ`, `site/*` or `*`. Reading and watching are open to any agent name.
+  `@project:person` or `all`. Every registered user may publish to every outbound; `owner` only says whose it is.
+- A **user** registers themselves: the login is their Jira login, the Jira token is kept per site in
+  `/data/secrets/users/<login>/<site>`, the service token's hash in `state.db`. `revoke` deletes the user with their
+  tokens (they can register again); `claim` makes them the watcher of every address that has none.
 
 ## Tracking commands
 
 ```bash
-relay add DEMO-42 team:@backend me:alice --with-subtasks   # summary and a snapshot prompt
-relay add other/ABC-1 team:@backend --dry-run    # an issue on another site; print the snapshot, record nothing
-relay to DEMO-42 add team:@backend:bob           # one more address; it gets a snapshot right away
-relay to DEMO-42 rm me:alice                     # remove an address (the last one only via rm)
-relay show DEMO-42
+relay add DEMO-42 team:@backend me:alice --by alice --with-subtasks   # summary and a snapshot prompt
+relay add other/ABC-1 team:@backend --by alice --dry-run   # another site; print the snapshot, record nothing
+relay to DEMO-42 add team:@backend:bob --by bob  # one more address; it gets a snapshot right away
+relay to DEMO-42 rm me:alice                     # remove an address for everyone (the last one only via rm)
+relay show DEMO-42 --by alice
 relay ls
 relay subtasks DEMO-41 on --yes                  # pick up subtasks of a tracked issue
 relay rm DEMO-42                                 # together with picked-up subtasks
 relay poll --dry-run                             # what would go out right now
-relay agent <<<'{"as": "backend", "argv": ["log", "--all"]}'   # the gateway journal
 ```
 
-`add`, `to`, `subtasks`, `rm` and `poll` take the same lock as the loop: they wait for the current cycle to finish.
-Agents put issues on tracking themselves with `jira watch`; in `ls`, the parentheses after an address show which agent
-set it.
+`--by LOGIN` says whose Jira token reads the issue and who watches it. `add`, `to`, `subtasks`, `rm` and `poll` take
+the same lock as the loop: they wait for the current cycle to finish. Users put issues on tracking themselves with
+`jira watch`; in `ls`, the parentheses after an address list its watchers (`login/agent`). An address shared by
+several watchers is one address: one snapshot, one note per change.
 
 ## What lives where
 
 | What | Where |
 |---|---|
-| image | `jira-relay:local`: `python:3.12-alpine` + git/bash/openssh, code in `/opt/jira-relay`, xchg client in `/opt/xchg` (pinned `XCHG_REF`) |
+| image | `jira-relay:local`: `python:3.12-alpine` + git/bash/openssh/openssl, code in `/opt/jira-relay`, xchg client in `/opt/xchg` (pinned `XCHG_REF`) |
+| services | `tracker` (`jira-relay run`), `gateway` (`jira-relay serve`, port 8443 published on `JIRA_RELAY_BIND:JIRA_RELAY_PORT`) |
 | settings | `/data/config/jira-relay.toml` in the volume `${JIRA_RELAY_VOLUME:-jira-relay_data}` |
-| secrets | `/data/secrets/jira/<site>`, `/data/secrets/users/<login>/<site>`, `/data/secrets/outbound/<name>/{ssh_key,known_hosts}` (0600) |
-| state | `/data/state/state.db`: tracked issues, addresses, deliveries, the gateway journal |
+| secrets | `/data/secrets/users/<login>/<site>`, `/data/secrets/outbound/<name>/{ssh_key,known_hosts}`, `/data/secrets/tls/{cert,key}.pem` (0600) |
+| state | `/data/state/state.db`: tracked issues, addresses and watchers, deliveries, registered users, the gateway journal |
 | xchg | `/data/xchg/` (bot config), `/data/hub-<outbound>/` (hub clones) |
 | log | `docker compose logs` (json-file, 3 × 10 MB) |
 

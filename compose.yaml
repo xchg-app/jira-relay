@@ -1,36 +1,52 @@
 name: jira-relay
 
-# Everything about the installation (Jira sites, outbounds, users) lives in the data volume: /data/config/jira-relay.toml
-# and /data/secrets, managed with `docker compose exec jira-relay jira-relay jira|outbound|user ...`.
+# Everything about the installation (Jira sites, outbounds) lives in the data volume: /data/config/jira-relay.toml
+# and /data/secrets, managed with `docker compose exec tracker jira-relay jira|outbound|user ...`. Users register
+# themselves through the gateway. Two services from one image share the volume: the tracker (polling, publishing) and
+# the gateway (agents' HTTPS port), restarted independently.
 # Host-specific build and runtime values go to .env next to this file (see README "Install"):
 #   JIRA_RELAY_VOLUME  data volume name (default jira-relay_data)
+#   JIRA_RELAY_BIND    host address the gateway port is published on (default 127.0.0.1: put the office-network
+#                      address of the host here; docker publishes ports past ufw, so the address is the fence)
+#   JIRA_RELAY_PORT    host port of the gateway (default 8443)
 #   APP_UID, APP_GID   uid/gid of the service process and of /data
 #   ALPINE_MIRROR      apk mirror when the default one is slow or unreachable
 #   BOT_NAME, BOT_EMAIL  git author of the bot's commits in xchg hubs
+x-service: &service
+  image: jira-relay:local
+  init: true  # PID 1 is tini: SIGTERM reaches python, docker stop does not wait 10 s
+  restart: unless-stopped
+  volumes:
+    - data:/data
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: "3"
+
 services:
-  jira-relay:
+  tracker:
+    <<: *service
     build:
       context: .
       args:
         APP_UID: ${APP_UID:-1000}
         APP_GID: ${APP_GID:-1000}
         ALPINE_MIRROR: ${ALPINE_MIRROR:-}
-    image: jira-relay:local
-    init: true  # PID 1 is tini: SIGTERM reaches python, docker stop does not wait 10 s
-    restart: unless-stopped
     command: ["jira-relay", "run"]
     environment:
       GIT_AUTHOR_NAME: ${BOT_NAME:-jira-bot}
       GIT_AUTHOR_EMAIL: ${BOT_EMAIL:-jira-bot@localhost}
       GIT_COMMITTER_NAME: ${BOT_NAME:-jira-bot}
       GIT_COMMITTER_EMAIL: ${BOT_EMAIL:-jira-bot@localhost}
-    volumes:
-      - data:/data
-    logging:
-      driver: json-file
-      options:
-        max-size: 10m
-        max-file: "3"
+
+  gateway:
+    <<: *service
+    command: ["jira-relay", "serve"]
+    depends_on:
+      - tracker  # the image is built by the tracker service
+    ports:
+      - "${JIRA_RELAY_BIND:-127.0.0.1}:${JIRA_RELAY_PORT:-8443}:8443"
 
 volumes:
   data:

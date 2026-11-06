@@ -48,9 +48,9 @@ service: read freely, change on your human's command, watch issues into xchg hub
 
 $install
 
-Then, once in a terminal: \`jira setup HOST\` (the ssh host where jira-relay runs) and, unless you are the
-jira-relay admin, \`jira token set --jira SITE\` with your own Jira personal access token. The service
-itself is set up by its admin: see the jira-relay README.
+Then, once in a terminal: \`jira setup https://HOST:8443\` (the jira-relay gateway; compare the certificate
+fingerprint it prints with the one the admin announced) and \`jira register\` with your own Jira personal
+access token. The service itself is set up by its admin: see the jira-relay README.
 
 ## This repository is generated
 
