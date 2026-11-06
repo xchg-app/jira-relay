@@ -6,6 +6,10 @@ Written for people and agents: what changed in behavior, not which files were to
 
 ## [Unreleased]
 
+### Changed
+- What the human must run themselves (`setup`, `register`, `token set`) is named by the client's full path in
+  messages, the skill and README: with a plugin, `jira` is not on the human's `PATH`.
+
 ## [0.6.0] — 2026-11-06
 
 ### Breaking

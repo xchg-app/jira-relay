@@ -29,6 +29,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 CONFIG = Path(os.environ.get('XDG_CONFIG_HOME', '~/.config')).expanduser() / 'jira-relay' / 'client.conf'
+ME = Path(__file__).resolve()  # the human's terminal has no `jira` on PATH when the client came as a plugin
 VERSION = '0.6.0'  # jira-relay version this client and skill came with; set by bin/release
 TIMEOUT = 180
 
@@ -100,7 +101,7 @@ def connect(url: str, pinned: str) -> tuple[HTTPSConnection, str]:
     if pinned and seen.replace(':', '').casefold() != pinned.replace(':', '').casefold():
         conn.close()
         raise ServiceError(f'the certificate of {url} changed: SHA-256 {seen}, pinned {pinned}. If the admin '
-                           f'reissued it, run `jira setup {url}` again; otherwise do not continue')
+                           f'reissued it, run `{ME} setup {url}` again; otherwise do not continue')
     return conn, seen
 
 
@@ -108,7 +109,7 @@ def call(settings: dict, method: str, path: str, body=None, token: str = '') -> 
     """One request. Without a pinned fingerprint (setup) the certificate seen is put into the settings."""
     url = settings.get('url')
     if not url:
-        raise ServiceError('the jira-relay service is not set: ask your human where it runs, then jira setup URL')
+        raise ServiceError(f'the jira-relay service is not set: ask your human where it runs, then {ME} setup URL')
     conn, settings['fingerprint'] = connect(url, settings.get('fingerprint', ''))
     headers = {'Content-Type': 'application/json'}
     if token:
@@ -154,7 +155,7 @@ def setup(args: list[str]) -> int:
     seen = settings['fingerprint']
     print(f'jira: {url} is jira-relay {reply.get("version")}, certificate SHA-256 {seen}\n'
           f'jira: saved to {CONFIG}. Compare the fingerprint with what the jira-relay admin announced; '
-          f'then register: jira register')
+          f'then register: {ME} register')
     return 0
 
 
@@ -170,7 +171,7 @@ def register(args: list[str]) -> int:
         return fail('register is done by your human in their own terminal: it asks for their Jira token')
     settings = load_settings()
     if not settings.get('url'):
-        return fail('the jira-relay service is not set: jira setup URL first')
+        return fail(f'the jira-relay service is not set: {ME} setup URL first')
     token = getpass.getpass('Jira Personal Access Token (hidden): ').strip()
     if not token:
         return fail('no token given')
@@ -245,7 +246,7 @@ def main() -> int:
 
     settings = load_settings()
     if not settings.get('token'):
-        return fail('not registered with the jira-relay service: your human runs `jira register` in their terminal')
+        return fail(f'not registered with the jira-relay service: your human runs `{ME} register` in their terminal')
     try:
         reply = call(settings, 'POST', '/agent', request, token=settings['token'])
     except ServiceError as e:
@@ -254,7 +255,11 @@ def main() -> int:
         out = reply.get('out') or ''
         print(out, end='' if out.endswith('\n') else '\n')
         return 0
-    return fail(reply.get('error') or 'error without text')
+    # what the human must run themselves, by the client's path: `jira` is not on their PATH
+    error = reply.get('error') or 'error without text'
+    for human in ('jira register', 'jira token set'):
+        error = error.replace(human, f'{ME} {human[5:]}')
+    return fail(error)
 
 
 if __name__ == '__main__':

@@ -10,7 +10,8 @@ do in Jira is done from your human's Jira account.
 
 Everything goes through the `jira` client. If `jira` isn't on `PATH`, run it by its path: `bin/jira` two levels above
 this skill's directory. Call it without variables or `cd`: this way Claude Code recognizes read commands by their
-prefix and does not ask about them.
+prefix and does not ask about them. Your human's terminal has no `jira` on `PATH` (the client came with your plugin):
+whenever they must run `setup`, `register` or `token set` themselves, give them the client's full path (`command -v jira`).
 
 ## Rule
 
@@ -34,7 +35,8 @@ jira sites --as backend      # Jira sites, your human's token per site, where yo
   anywhere in the command. Any agent of a registered human reads, changes and watches; what your human may change
   in Jira, you may change — the signature and the journal tell who did it.
 - `the jira-relay service is not set` / `not registered` — your human does it once, in their terminal:
-  `jira setup https://HOST:8443` (the admin tells the URL and the certificate fingerprint), then `jira register`.
+  `jira setup https://HOST:8443` (the admin tells the URL and the certificate fingerprint), then `jira register` —
+  both by the client's full path.
 
 ## Jira sites
 

@@ -64,6 +64,9 @@ The `jira` client and its skill come as a package for the user's coding agent:
 
 Any other agent with a shell: copy `client/bin/jira` somewhere on `PATH` and give it `client/skills/jira/SKILL.md`.
 
+A plugin keeps the client inside itself, so your terminal has no `jira` command: run it by its full path (ask your
+agent, or `command -v jira` in its shell; the path changes with the plugin version), or put that `bin/` on `PATH`.
+
 Then once, in a terminal: `jira setup https://HOST:8443` (it pins the service certificate and prints its fingerprint:
 compare with what the admin announced, or pass `--fingerprint SHA256` to have it checked), then `jira register` with
 your Jira personal access token (asked without echo, verified against Jira; the login is what Jira says). A token for
