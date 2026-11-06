@@ -43,7 +43,7 @@ class XchgDriver(Driver):
             return [f'outbound {self.outbound.name}: no write key {key}']
         return hub.connect(self.outbound.name, self.outbound.options['remote'], self.outbound.options['login'],
                            self.cfg.data_dir / f'hub-{self.outbound.name}', key,
-                           known if known.exists() else KNOWN_HOSTS, self.cfg.admin)
+                           known if known.exists() else KNOWN_HOSTS, self.outbound.owner)
 
     def sync(self) -> str:
         return hub.sync(self.outbound.name)

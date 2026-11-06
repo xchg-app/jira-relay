@@ -108,7 +108,7 @@ def connect(hub: str, remote: str, login: str, path: Path, key: Path, known_host
         return warnings + [f'hub {hub} ({remote}) is not connected']
     subprocess.run(['git', '-C', str(path), 'config', 'core.sshCommand', ssh], check=False)
     # the bot's project and passport in every hub: signature <login>/<project> (a repeated call changes nothing)
-    result = _xchg('projects', 'add', PROJECT, '--hub', hub, '--repo', PROJECT_REPO, '--owner', owner, ssh=ssh)
+    result = _xchg('projects', 'add', PROJECT, '--hub', hub, '--repo', PROJECT_REPO, *(['--owner', owner] if owner else []), ssh=ssh)
     if result.returncode:
         warnings.append(f'hub {hub}: project {PROJECT} not added: {_output(result)}')
     return warnings

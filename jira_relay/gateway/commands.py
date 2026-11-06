@@ -4,21 +4,18 @@ The request comes from bin/jira on a PC over ssh:
     {"as": "backend", "argv": ["comment", "DEMO-42"], "text": "…", "files": {"a.png": "<base64>"}}
 Reply: {"ok": true, "out": "…"} or {"ok": false, "error": "…"}; both texts go through mask().
 
-Users are `users` in the jira-relay config file (config.py). The login is the account on the service host and the Jira login: bin/jira
-goes over ssh as that account and passes `--user "$(id -un)"`, evaluated on the host. The admin uses the service
-secret of each Jira site; others put their own token per site (`jira token set --jira <site>`), and actions come from
-their account.
+Users register themselves with their Jira token (gateway/auth.py): the login is the Jira login, every request is
+authenticated by the service token, and the login never comes from the request body. A token for another site is
+added with `jira token set --jira <site>`; all actions in Jira come from the user's own account.
 
 Several Jira sites: an issue is "<site>/<KEY>" or a bare key. A bare key (and a command without an issue: search, api,
-create with a bare project, token) is on the site from `--jira NAME` (anywhere in argv), else on the agent's site if
-all of its projects name one site, else on the default site (the first configured).
+create with a bare project, token) is on the site from `--jira NAME` (anywhere in argv), else on the default site
+(the first configured).
 
-Any agent of a user can read and watch under its project name. Changes are allowed only to agents from
-users.<login>.agents and only in their projects ("*", "<site>/*", "<site>/<PROJECT>"), signed "— agent <name>" wherever
-there is text, and journaled (gateway/journal.py; a non-admin agent is "<login>/<name>", the target is "<site>/<KEY>").
-Watching goes through tracker/api.py: any issue, the snapshot is sent at once (the user's command to the agent is the
-confirmation), to the user's outbounds (config.outbounds_of; the admin — all). Polling and snapshots
-use the service secret. Changing and watching happen on the user's command: that is an agent rule
+Any agent of a registered user reads, changes and watches under its project name: changes are signed "— agent <name>"
+wherever there is text and journaled (gateway/journal.py; the agent is "<login>/<name>", the target is "<site>/<KEY>").
+Watching goes through tracker/api.py: any issue, to any configured outbound, the snapshot is sent at once (the user's
+command to the agent is the confirmation). Changing and watching happen on the user's command: that is an agent rule
 (client/skills/jira/SKILL.md) plus Claude Code's confirmation; the service cannot check it.
 """
 import argparse
@@ -34,11 +31,11 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qsl, quote
 
 from .. import config, render
-from ..config import Agent, Config
+from ..config import Config
 from ..issue import normalize
 from ..jira import Jira, JiraError, make_auth
 from ..mask import mask
-from ..tracker.api import Tracker, TrackerError, hub_of
+from ..tracker.api import Tracker, TrackerError
 from . import AgentError
 from .journal import Journal
 
@@ -80,14 +77,11 @@ class _Parser(argparse.ArgumentParser):
 @dataclass
 class Context:
     cfg: Config
-    login: str  # the account on the service host and the Jira login
+    login: str  # the registered user: the Jira login
     journal: Journal
     agent: str
-    projects: tuple[str, ...]  # where the agent may change Jira; empty: not in the user's config
     site: str  # for bare keys and commands without an issue
     client: Callable[[str], Jira | None]  # site → the user's Jira client; None: no token for that site
-    hubs: tuple[str, ...] | None = None  # outbounds the user may watch to; None — all (the admin)
-    watch_to: str = ''
     make_jira: object = Jira  # (url, auth) → Jira: checks a new token
     text: str = ''
     files: dict[str, bytes] = field(default_factory=dict)
@@ -97,10 +91,6 @@ class Context:
     # what to journal: set by the change handler before calling Jira
     target: str = ''
     summary: str = ''
-
-    @property
-    def admin(self) -> bool:
-        return self.login == self.cfg.admin
 
     def jira(self, site: str) -> Jira:
         if site not in self.clients:
@@ -131,13 +121,10 @@ def check_site(cfg: Config, name: str) -> str:
         raise AgentError(str(e)) from None
 
 
-def default_site(cfg: Config, agent: Agent, chosen: str = '') -> str:
-    """--jira, else the agent's site when all of its projects name one, else the first configured site."""
+def default_site(cfg: Config, chosen: str = '') -> str:
+    """--jira, else the first configured site."""
     if chosen:
         return check_site(cfg, chosen)
-    sites = {p.partition('/')[0] for p in agent.projects}
-    if len(sites) == 1 and all('/' in p for p in agent.projects):
-        return next(iter(sites))
     try:
         return cfg.default_site
     except config.ConfigError as e:
@@ -160,39 +147,8 @@ def parse_key(ctx: Context, value: str, site: str | None = None) -> tuple[str, s
 
 
 def who(ctx: Context) -> str:
-    """Name in the journal and in "who added the address": admin's agents as is, others prefixed with the login."""
-    return ctx.agent if ctx.admin else f'{ctx.login}/{ctx.agent}'
-
-
-def require_hubs(ctx: Context, targets: list[str]) -> None:
-    if ctx.hubs is None:
-        return
-    for target in targets:
-        if hub_of(target.strip()) not in ctx.hubs:
-            raise AgentError(f'"{target}": user {ctx.login} can watch only in hubs '
-                             f'{", ".join(ctx.hubs) or "— none"} (users.{ctx.login}.outbounds in the jira-relay config)')
-
-
-def may_write(projects: tuple[str, ...], site: str, project: str) -> bool:
-    for entry in projects:
-        if entry == '*':
-            return True
-        name, _, allowed = entry.partition('/')
-        if name == site and (allowed == '*' or allowed.upper() == project.upper()):
-            return True
-    return False
-
-
-def require_write(ctx: Context, site: str, *targets: str) -> None:
-    """Changes are allowed only in the agent's projects; target is an issue or project key on site."""
-    if not ctx.projects:
-        raise AgentError(f'agent {who(ctx)} cannot change Jira: it is not among the agents of {ctx.login} in the '
-                         f'jira-relay config. Reading and watching are allowed; for changes ask the jira-relay admin '
-                         f'to add the agent and its Jira projects')
-    for target in targets:
-        if not may_write(ctx.projects, site, target.split('-')[0]):
-            raise AgentError(f'agent {who(ctx)} cannot change {site}/{target}: its projects are '
-                             f'{", ".join(ctx.projects)} (users.{ctx.login}.agents.{ctx.agent} in the jira-relay config)')
+    """Name in the journal and in "who added the address": <login>/<agent>."""
+    return f'{ctx.login}/{ctx.agent}'
 
 
 def need_text(ctx: Context, what: str) -> str:
@@ -266,7 +222,6 @@ def parse_period(value: str) -> timedelta:
 # --- changes -------------------------------------------------------------------------------------
 def cmd_comment(ctx: Context, args) -> str:
     site, key = parse_key(ctx, args.key)
-    require_write(ctx, site, key)
     text = need_text(ctx, 'comment')
     ctx.target, ctx.summary = f'{site}/{key}', summarize(text)
     return add_comment(ctx, site, key, text)
@@ -283,7 +238,6 @@ def cmd_create(ctx: Context, args) -> str:
         parent_site, parent = parse_key(ctx, args.parent, site)
         if parent_site != site:
             raise AgentError(f'--parent {args.parent} is on {parent_site}, the project on {site}')
-    require_write(ctx, site, project, *([parent] if parent else []))
     fields = {
         'project': {'key': project}, 'issuetype': {'name': args.type}, 'summary': args.summary,
         'description': signed(ctx.text, ctx.agent),
@@ -306,7 +260,6 @@ def cmd_transition(ctx: Context, args) -> str:
     """Transition by transition name or target status. The comment is a separate request: Jira rejects the comment
     field in a transition without a screen."""
     site, key = parse_key(ctx, args.key)
-    require_write(ctx, site, key)
     text = need_text(ctx, 'transition comment') if args.comment else ''
     wanted = args.name.casefold()
     jira = ctx.jira(site)
@@ -328,7 +281,6 @@ def cmd_transition(ctx: Context, args) -> str:
 
 def cmd_assign(ctx: Context, args) -> str:
     site, key = parse_key(ctx, args.key)
-    require_write(ctx, site, key)
     login = None if args.login == '-' else args.login
     ctx.target, ctx.summary = f'{site}/{key}', f'assignee → {login or "nobody"}'
     ctx.jira(site).write('PUT', f'/rest/api/2/issue/{quote(key)}/assignee', {'name': login})
@@ -376,7 +328,6 @@ def edit_body(changes: list[str]) -> dict:
 
 def cmd_edit(ctx: Context, args) -> str:
     site, key = parse_key(ctx, args.key)
-    require_write(ctx, site, key)
     body = edit_body(args.changes)
     ctx.target, ctx.summary = f'{site}/{key}', summarize(' '.join(args.changes))
     ctx.jira(site).write('PUT', f'/rest/api/2/issue/{quote(key)}', body)
@@ -403,7 +354,6 @@ def cmd_link(ctx: Context, args) -> str:
     if other_site != site:
         raise AgentError(f'link: {site}/{key} and {other_site}/{other} are on different Jira sites; '
                          f'Jira links issues of one site only')
-    require_write(ctx, site, key)
     jira = ctx.jira(site)
     types = jira.get('/rest/api/2/issueLinkType').get('issueLinkTypes') or []
     name, source, target = link_direction(types, args.type, key, other)
@@ -432,7 +382,6 @@ def multipart(files: dict[str, bytes]) -> tuple[bytes, str]:
 
 def cmd_attach(ctx: Context, args) -> str:
     site, key = parse_key(ctx, args.key)
-    require_write(ctx, site, key)
     missing = [n for n in args.files if n not in ctx.files]
     if missing:
         raise AgentError(f'files did not arrive: {", ".join(missing)}')
@@ -486,10 +435,6 @@ def cmd_api(ctx: Context, args) -> str:
         return json.dumps(ctx.jira(site).write(method, path, body), ensure_ascii=False, indent=1)
 
     targets = api_targets(path, body)
-    if not targets and not may_write(ctx.projects, site, '*'):
-        raise AgentError('api: cannot tell which issue or project the request changes — '
-                         'give the issue by key in the path (/issue/DEMO-1/…), not by numeric id')
-    require_write(ctx, site, *targets)
     if isinstance(body, dict):
         if COMMENT_PATH.match(path) and isinstance(body.get('body'), str):
             body['body'] = signed(body['body'], ctx.agent)
@@ -520,8 +465,8 @@ def tracked(ctx: Context, call) -> str:
 
 
 def watched_ref(ctx: Context, value: str) -> str:
-    """"<site>/<KEY>" for the tracker. The user needs their own token for the site: the tracker reads Jira with the
-    service secret, and a user without access to the site must not get its issues through watching."""
+    """"<site>/<KEY>" for the tracker. The user needs their own token for the site: a user without access to the site
+    must not get its issues through watching."""
     site, key = parse_key(ctx, value)
     ctx.jira(site)
     return f'{site}/{key}'
@@ -529,11 +474,10 @@ def watched_ref(ctx: Context, value: str) -> str:
 
 def cmd_watch(ctx: Context, args) -> str:
     ref = watched_ref(ctx, args.key)
-    targets = args.addresses or ([ctx.watch_to] if ctx.watch_to else [])
+    targets = args.addresses
     if not targets:
-        raise AgentError(f'where to send updates? Give an address (work:@project) — agent {who(ctx)} has no watch_to '
-                         f'in the jira-relay config')
-    require_hubs(ctx, targets)
+        raise AgentError(f'where to send updates? Give an address: hub[:@project][:person], e.g. '
+                         f'{ctx.cfg.hubs[0] if ctx.cfg.hubs else "team"}:@{ctx.agent} (hubs: jira sites)')
     if not args.dry_run:
         ctx.target, ctx.summary = ref, ' '.join(targets) + (' +subtasks' if args.with_subtasks else '')
     return tracked(ctx, lambda t: t.watch(ref, targets, with_subtasks=args.with_subtasks,
@@ -542,11 +486,8 @@ def cmd_watch(ctx: Context, args) -> str:
 
 def cmd_unwatch(ctx: Context, args) -> str:
     ref = watched_ref(ctx, args.key)
-    if args.address:
-        require_hubs(ctx, [args.address])
     ctx.target, ctx.summary = ref, args.address or 'all addresses'
-    # without an address, only own hubs: other users' addresses stay
-    return tracked(ctx, lambda t: t.unwatch(ref, args.address, hubs=ctx.hubs))
+    return tracked(ctx, lambda t: t.unwatch(ref, args.address, hubs=None))
 
 
 def cmd_subtasks(ctx: Context, args) -> str:
@@ -557,23 +498,18 @@ def cmd_subtasks(ctx: Context, args) -> str:
 
 
 def cmd_watching(ctx: Context, args) -> str:
-    return tracked(ctx, lambda t: t.watching(ctx.hubs))
+    return tracked(ctx, lambda t: t.watching(None))
 
 
 def cmd_sites(ctx: Context, args) -> str:
-    """What the agent should know before working: Jira sites, its own rights and where it may watch to."""
+    """What the agent should know before working: Jira sites, the user's tokens and where it may watch to."""
     lines = ['Jira sites (a bare issue key goes to the one marked *):']
     for name, site in ctx.cfg.sites.items():
-        token = ('service secret' if ctx.admin else
-                 'your token set' if ctx.cfg.user_secret_path(ctx.login, name).exists() else
+        token = ('your token set' if ctx.cfg.user_secret_path(ctx.login, name).exists() else
                  f'no token yet, set it with jira token set --jira {name}')
         lines.append(f'  {"*" if name == ctx.site else " "} {name:<12} {site.url}  ({token})')
-    lines.append(f'you: {ctx.login}' + (' (the admin)' if ctx.admin else ''))
-    lines.append(f'agent {ctx.agent} may change: ' + (', '.join(ctx.projects) if ctx.projects else
-                                                     'nothing (read and watch only)'))
-    hubs = ctx.cfg.hubs if ctx.hubs is None else ctx.hubs
-    lines.append('watch to: ' + (', '.join(f'{h}:…' for h in hubs) or 'nowhere')
-                 + (f'; default {ctx.watch_to}' if ctx.watch_to else ''))
+    lines.append(f'you: {ctx.login}; agent {ctx.agent}')
+    lines.append('watch to: ' + (', '.join(f'{h}:…' for h in ctx.cfg.hubs) or 'nowhere'))
     return '\n'.join(lines)
 
 
@@ -581,9 +517,6 @@ def cmd_sites(ctx: Context, args) -> str:
 def cmd_token(ctx: Context, args) -> str:
     """The user's own token for one site (ctx.site: --jira or the default)."""
     site = ctx.cfg.sites[ctx.site]
-    if ctx.admin:
-        raise AgentError(f'the admin uses the service secret of {site.name} (jira-relay jira secret {site.name} on the service host); '
-                         f'it is not changed through an agent')
     path = ctx.cfg.user_secret_path(ctx.login, site.name)
     if args.action == 'set':
         token = ctx.text.strip()
@@ -595,7 +528,8 @@ def cmd_token(ctx: Context, args) -> str:
         except JiraError as e:
             raise AgentError(f'{site.name} rejected the token ({e})') from None
         if login.casefold() != ctx.login.casefold():
-            raise AgentError(f'the token belongs to {site.name} user "{login}", but you are registered as "{ctx.login}"')
+            raise AgentError(f'the token belongs to {site.name} user "{login}", but you are registered as "{ctx.login}"; '
+                             f'a different Jira account registers separately (jira register)')
         config.write_secret(path, token)
         return f'token for {site.name} saved; Jira actions there come from {login}'
     if args.action == 'rm':
@@ -681,7 +615,7 @@ def build_parser() -> _Parser:
     p.add_argument('files', nargs='+')
     p.set_defaults(handler=cmd_attach)
 
-    p = sub.add_parser('watch', help='watch an issue: changes arrive as notes in a hub (default: the agent watch_to)')
+    p = sub.add_parser('watch', help='watch an issue: changes arrive as notes at the given addresses')
     p.add_argument('key')
     p.add_argument('addresses', nargs='*', metavar='address', help='hub[:@project][:person]: team:@backend, me:alice')
     p.add_argument('--with-subtasks', action='store_true', help='and subtasks; new ones are picked up automatically')
@@ -703,14 +637,13 @@ def build_parser() -> _Parser:
     choice.add_argument('--dry-run', action='store_true')
     p.set_defaults(handler=cmd_subtasks)
 
-    p = sub.add_parser('sites', help='Jira sites, your token per site, what this agent may change and watch to')
+    p = sub.add_parser('sites', help='Jira sites, your token per site, where this agent may watch to')
     p.set_defaults(handler=cmd_sites)
 
     p = sub.add_parser('watching', help='what is watched and where (in parentheses: the agent that added the address)')
     p.set_defaults(handler=cmd_watching)
 
-    p = sub.add_parser('token', help='your own Jira token for a site (not for the admin): set (from stdin), status, rm; '
-                                     '--jira SITE')
+    p = sub.add_parser('token', help='your Jira token for another site: set (from stdin), status, rm; --jira SITE')
     p.add_argument('action', choices=('set', 'status', 'rm'))
     p.set_defaults(handler=cmd_token)
 
@@ -742,7 +675,7 @@ def take_site(argv: list[str]) -> tuple[list[str], str]:
 
 def handle(request: dict, *, cfg: Config, login: str, journal: Journal, tracker: Tracker | None = None,
            make_jira=Jira) -> dict:
-    """One agent request of a registered user (login in cfg.users) → reply. Changes (failed ones too) are journaled.
+    """One agent request of a registered user → reply. Changes (failed ones too) are journaled.
     Jira clients come from cfg.user_jira(login, site); make_jira(url, auth) checks a new token."""
     parser = build_parser()
     help_out = io.StringIO()
@@ -769,19 +702,17 @@ def handle(request: dict, *, cfg: Config, login: str, journal: Journal, tracker:
     agent = request.get('as') or ''
     if not NAME_RE.match(agent):
         return {'ok': False, 'error': f'--as "{agent}": your project name is required ([a-z0-9._-]), e.g. --as backend'}
-    info = cfg.users[login].agents.get(agent, Agent())  # not listed: read and watch only
     try:
         files = {n: base64.b64decode(v) for n, v in (request.get('files') or {}).items()}
     except (ValueError, TypeError) as e:
         return {'ok': False, 'error': f'cannot decode attachments: {e}'}
     try:
-        site = default_site(cfg, info, chosen)
+        site = default_site(cfg, chosen)
     except AgentError as e:
         return {'ok': False, 'error': clean(str(e))}
-    ctx = Context(cfg=cfg, login=login, journal=journal, agent=agent, projects=info.projects, site=site,
-                  client=lambda name: cfg.user_jira(login, name), hubs=cfg.outbounds_of(login),
-                  watch_to=info.watch_to, make_jira=make_jira, text=request.get('text') or '', files=files,
-                  tracker=tracker)
+    ctx = Context(cfg=cfg, login=login, journal=journal, agent=agent, site=site,
+                  client=lambda name: cfg.user_jira(login, name), make_jira=make_jira,
+                  text=request.get('text') or '', files=files, tracker=tracker)
 
     write = args.command not in READS and not (args.command == 'api' and args.method.upper() == 'GET')
     try:

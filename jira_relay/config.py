@@ -1,15 +1,15 @@
 """Settings: one TOML file in the data directory, secrets in files next to it.
 
-    <data>/config/jira-relay.toml        what is connected: Jira sites, outbounds, users and their agents
-    <data>/secrets/jira/<site>           service secret of a Jira site (for pat, the token): polling and the admin
+    <data>/config/jira-relay.toml        what is connected: Jira sites and outbounds
+    <data>/secrets/jira/<site>           service secret of a Jira site (for pat, the token): polling
     <data>/secrets/outbound/<name>/      outbound credentials (xchg: ssh_key)
-    <data>/secrets/users/<login>/<site>  a user's own Jira secret
-    <data>/state/                        tracker state and the gateway journal
+    <data>/secrets/users/<login>/<site>  a user's own Jira secret, saved at registration (gateway/auth.py)
+    <data>/state/                        tracker state, registered users and the gateway journal
 
-The data directory is JIRA_RELAY_DATA (in the container /data). The file is written by `jira-relay jira|outbound|user`
-commands; hand edits are fine, but comments are not kept. Secrets never go into the file.
+The data directory is JIRA_RELAY_DATA (in the container /data). The file is written by `jira-relay jira|outbound`
+commands; hand edits are fine, but comments are not kept. Secrets never go into the file. Users are not in the
+file: they register themselves with their Jira token and live in state.db (gateway/auth.py).
 
-    admin = "alice"
     timezone = "UTC"
     max_attachment = 10485760
     interval = 300
@@ -27,14 +27,7 @@ commands; hand edits are fine, but comments are not kept. Secrets never go into 
     type = "xchg"
     remote = "git@xchg.app:alice/personal.git"
     login = "alice.jira-bot"
-    owner = "alice"             # personal: only its owner can publish to it
-
-    [users.bob]
-    outbounds = ["team"]        # shared outbounds the user may publish to; the admin may use all
-
-    [users.bob.agents.backend]
-    projects = ["main/DEMO"]    # where the agent may change Jira: <site>/<PROJECT>, <site>/* or *
-    watch_to = "team:@backend"  # where `jira watch` sends updates when no address is given
+    owner = "alice"             # whose: named as the owner of the bot's project in the hub; informational
 """
 import os
 import re
@@ -44,7 +37,7 @@ from pathlib import Path
 
 from .jira import AUTH_KINDS, Jira, make_auth
 
-NAME_RE = re.compile(r'^[a-z0-9][a-z0-9._-]*$')  # site, outbound and agent names
+NAME_RE = re.compile(r'^[a-z0-9][a-z0-9._-]*$')  # site and outbound names
 LOGIN_RE = re.compile(r'^[A-Za-z0-9._-]+$')
 DEFAULTS = {'timezone': 'Europe/Moscow', 'max_attachment': 10 * 1024 * 1024, 'interval': 300}
 
@@ -65,32 +58,17 @@ class Outbound:
     name: str
     type: str
     options: dict = field(default_factory=dict)  # type-specific: xchg — remote, login
-    owner: str = ''  # empty — shared (users get it through users.<login>.outbounds); a login — personal
-
-
-@dataclass(frozen=True)
-class Agent:
-    projects: tuple[str, ...] = ()  # "<site>/<PROJECT>", "<site>/*" or "*"
-    watch_to: str = ''
-
-
-@dataclass(frozen=True, eq=False)
-class User:
-    login: str
-    outbounds: tuple[str, ...] = ()  # shared outbounds allowed besides the user's own
-    agents: dict[str, Agent] = field(default_factory=dict)
+    owner: str = ''  # a login: whose outbound this is; every registered user may publish to any outbound
 
 
 @dataclass(frozen=True, eq=False)
 class Config:
     data_dir: Path
-    admin: str = ''
     tz: str = DEFAULTS['timezone']
     max_attachment: int = DEFAULTS['max_attachment']
     interval: int = DEFAULTS['interval']
     sites: dict[str, Site] = field(default_factory=dict)
     outbounds: dict[str, Outbound] = field(default_factory=dict)
-    users: dict[str, User] = field(default_factory=dict)
 
     # --- where things live ------------------------------------------------------------------------
     @property
@@ -134,7 +112,7 @@ class Config:
             raise ConfigError(f'unknown Jira site "{name}" (configured: {", ".join(self.sites) or "none"})') from None
 
     def jira(self, site: str | None = None) -> Jira:
-        """Client with the service secret of the site: polling, snapshots, the admin's agents."""
+        """Client with the service secret of the site: polling and snapshots."""
         s = self.site(site)
         secret = read_secret(self.site_secret_path(s.name))
         if not secret:
@@ -142,9 +120,7 @@ class Config:
         return Jira(s.url, make_auth(s.auth, secret))
 
     def user_jira(self, login: str, site: str | None = None) -> Jira | None:
-        """Client acting as the user: the admin uses the service secret, others their own (None — not set yet)."""
-        if login == self.admin:
-            return self.jira(site)
+        """Client acting as the user with their own secret for the site (None — not set yet)."""
         s = self.site(site)
         secret = read_secret(self.user_secret_path(login, s.name))
         return Jira(s.url, make_auth(s.auth, secret)) if secret else None
@@ -154,14 +130,6 @@ class Config:
     def hubs(self) -> tuple[str, ...]:
         """Names of all outbounds: the first part of a publishing address."""
         return tuple(self.outbounds)
-
-    def outbounds_of(self, login: str) -> tuple[str, ...] | None:
-        """Outbounds the user may publish to; None — all (the admin)."""
-        if login == self.admin:
-            return None
-        user = self.users.get(login)
-        allowed = set(user.outbounds) if user else set()
-        return tuple(n for n, o in self.outbounds.items() if o.owner == login or (not o.owner and n in allowed))
 
 
 def read_secret(path: Path) -> str:
@@ -192,6 +160,12 @@ def check_name(kind: str, value: str) -> str:
     return value
 
 
+def check_login(value: str) -> str:
+    if not LOGIN_RE.match(value):
+        raise ConfigError(f'login "{value}": letters, digits, ".", "_", "-"')
+    return value
+
+
 def parse(data: dict, directory: Path) -> Config:
     sites = {}
     for name, item in (data.get('jira') or {}).items():
@@ -208,20 +182,10 @@ def parse(data: dict, directory: Path) -> Config:
         if not kind:
             raise ConfigError(f'outbound.{name}: type is required')
         outbounds[check_name('outbound', name)] = Outbound(name, kind, item, owner)
-    users = {}
-    for login, item in (data.get('users') or {}).items():
-        if not LOGIN_RE.match(login):
-            raise ConfigError(f'users.{login}: a login is [A-Za-z0-9._-]')
-        agents = {check_name('agent', name): Agent(tuple(a.get('projects') or ()), a.get('watch_to') or '')
-                  for name, a in (item.get('agents') or {}).items()}
-        users[login] = User(login, tuple(item.get('outbounds') or ()), agents)
-    admin = data.get('admin') or ''
-    if users and admin not in users:
-        raise ConfigError(f'admin "{admin}" must be one of users')
-    return Config(data_dir=directory, admin=admin, tz=data.get('timezone', DEFAULTS['timezone']),
+    return Config(data_dir=directory, tz=data.get('timezone', DEFAULTS['timezone']),
                   max_attachment=int(data.get('max_attachment', DEFAULTS['max_attachment'])),
                   interval=int(data.get('interval', DEFAULTS['interval'])),
-                  sites=sites, outbounds=outbounds, users=users)
+                  sites=sites, outbounds=outbounds)
 
 
 def load(directory: Path | None = None) -> Config:
@@ -254,9 +218,7 @@ def _key(name: str) -> str:
 
 
 def dump(cfg: Config) -> str:
-    lines = ['# jira-relay settings: edit with `jira-relay jira|outbound|user ...`; secrets live in ../secrets', '']
-    if cfg.admin:
-        lines.append(f'admin = {_value(cfg.admin)}')
+    lines = ['# jira-relay settings: edit with `jira-relay jira|outbound ...`; secrets live in ../secrets', '']
     lines += [f'timezone = {_value(cfg.tz)}', f'max_attachment = {cfg.max_attachment}', f'interval = {cfg.interval}']
     for s in cfg.sites.values():
         lines += ['', f'[jira.{_key(s.name)}]', f'url = {_value(s.url)}', f'auth = {_value(s.auth)}']
@@ -265,14 +227,6 @@ def dump(cfg: Config) -> str:
         lines += [f'{_key(k)} = {_value(v)}' for k, v in o.options.items()]
         if o.owner:
             lines.append(f'owner = {_value(o.owner)}')
-    for u in cfg.users.values():
-        lines += ['', f'[users.{_key(u.login)}]']
-        if u.outbounds:
-            lines.append(f'outbounds = {_value(u.outbounds)}')
-        for name, a in u.agents.items():
-            lines += ['', f'[users.{_key(u.login)}.agents.{_key(name)}]', f'projects = {_value(a.projects)}']
-            if a.watch_to:
-                lines.append(f'watch_to = {_value(a.watch_to)}')
     return '\n'.join(lines) + '\n'
 
 

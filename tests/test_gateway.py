@@ -5,8 +5,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from jira_relay.config import Agent, Config, Outbound, Site, User
-from jira_relay.gateway import commands, service
+from jira_relay.config import Config, Outbound, Site
+from jira_relay.gateway import auth, commands, service
 from jira_relay.gateway.journal import Journal
 from jira_relay.jira import JiraError, PatAuth
 from jira_relay.tracker import hub
@@ -53,21 +53,17 @@ class FakeJira:
 
 
 def make_config(directory: Path) -> Config:
-    """Sites main (default) and other; outbounds team (shared) and me (alice's); alice is the admin, bob a user."""
+    """Sites main (default) and other; outbounds team and me (alice's)."""
     xchg = {'remote': 'git@git.example.com:team/hub.git', 'login': 'jira-bot'}
     return Config(
-        directory, admin='alice', tz='UTC', max_attachment=1000,
+        directory, tz='UTC', max_attachment=1000,
         sites={'main': Site('main', 'https://jira.example.com'), 'other': Site('other', 'https://jira.other.example.com')},
-        outbounds={'team': Outbound('team', 'xchg', xchg), 'me': Outbound('me', 'xchg', xchg, owner='alice')},
-        users={
-            'alice': User('alice', (), {'backend': Agent(('main/DEMO',), 'team:@backend')}),
-            'bob': User('bob', ('team',), {'backend': Agent(('main/DEMO',), 'team:@backend')}),
-        })
+        outbounds={'team': Outbound('team', 'xchg', xchg), 'me': Outbound('me', 'xchg', xchg, owner='alice')})
 
 
 class GatewayCase(unittest.TestCase):
-    """A real Config in a temp data dir. Config.user_jira is patched: the admin gets self.jiras[site], others get it
-    only when their secret file for the site exists, as the real one does."""
+    """A real Config in a temp data dir; alice (tokens for both sites) and bob (none yet) are registered.
+    Config.user_jira is patched: self.jiras[site] when the user's secret file for the site exists, as the real one."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -75,13 +71,17 @@ class GatewayCase(unittest.TestCase):
         self.cfg = make_config(Path(self.tmp.name))
         self.journal = Journal(self.cfg.state_path)
         self.addCleanup(self.journal.db.close)
+        self.users = auth.Users(self.cfg.state_path)
+        self.addCleanup(self.users.db.close)
+        for login in ('alice', 'bob'):
+            self.users.put(login, f'{login}-service-token')
+        self.give_token('alice', 'main')
+        self.give_token('alice', 'other')
         self.jiras = {'main': FakeJira(), 'other': FakeJira()}
 
         def user_jira(cfg, login, site=None):
             site = cfg.site(site).name
-            if login == cfg.admin or cfg.user_secret_path(login, site).exists():
-                return self.jiras[site]
-            return None
+            return self.jiras[site] if cfg.user_secret_path(login, site).exists() else None
         self.patch(Config, 'user_jira', user_jira)
 
     def patch(self, target, name, value):
@@ -119,20 +119,10 @@ class WriteTest(GatewayCase):
                                                     '?focusedCommentId=501#comment-501'})
         self.assertEqual(main.changes(), [('POST', '/rest/api/2/issue/DEMO-42/comment',
                                            {'body': 'Fixed, please check.\n\n_— agent backend_'})])
-        self.assertEqual(self.rows(), [('backend', 'comment', 'main/DEMO-42', 'Fixed, please check.')])
+        self.assertEqual(self.rows(), [('alice/backend', 'comment', 'main/DEMO-42', 'Fixed, please check.')])
 
-        # outside the agent's projects: another project, the same key on another site, an unlisted agent
-        for argv, who, message in ((['comment', 'OPS-1'], 'backend', 'cannot change main/OPS-1'),
-                                   (['comment', 'other/DEMO-42'], 'backend', 'cannot change other/DEMO-42'),
-                                   (['comment', 'DEMO-42'], 'stranger', 'not among the agents of alice')):
-            with self.subTest(argv=argv, who=who):
-                reply = self.ask(argv, who=who, text='x')
-                self.assertFalse(reply['ok'])
-                self.assertIn(message, reply['error'])
-        self.assertTrue(self.ask(['get', 'other/DEMO-42'], who='stranger')['ok'])  # reading is free
-        self.assertEqual(len(main.changes()) + len(self.jiras['other'].changes()), 1)
-
-        # a user's agent: journaled under login/agent; an unknown login never reaches Jira
+        # a user without a token for the site never reaches Jira; an unregistered login neither
+        self.assertIn('bob has no Jira token for main', self.ask(['comment', 'DEMO-42'], user='bob', text='x')['error'])
         self.give_token('bob', 'main')
         main.writes[('PUT', '/rest/api/2/issue/DEMO-42/assignee')] = None
         self.assertTrue(self.ask(['assign', 'DEMO-42', 'bob'], user='bob')['ok'])
@@ -149,8 +139,6 @@ class WriteTest(GatewayCase):
             (['api', 'POST', '/rest/api/2/user'], '{"name": "eve"}', 'only the jira-relay admin changes that'),
             (['api', 'PUT', '/rest/api/2/project/DEMO'], '{}', 'only the jira-relay admin changes that'),
             (['api', 'GET', '/rest/auth/1/session'], '', 'only /rest/api/2/'),
-            (['api', 'PUT', '/rest/api/2/issue/OPS-1'], '{"fields": {}}', 'cannot change main/OPS-1'),
-            (['api', 'POST', '/rest/api/2/issue'], '{"fields": {"project": {"key": "OPS"}}}', 'cannot change main/OPS'),
         )
         for argv, text, message in refused:
             with self.subTest(argv=argv):
@@ -165,7 +153,7 @@ class WriteTest(GatewayCase):
         self.assertTrue(self.ask(['api', 'POST', '/rest/api/2/issue/DEMO-42/comment'], text='{"body": "Done"}')['ok'])
         self.assertEqual(main.changes(), [('POST', '/rest/api/2/issue/DEMO-42/comment',
                                            {'body': 'Done\n\n_— agent backend_'})])
-        self.assertEqual([r[:3] for r in self.rows()], [('backend', 'api', 'main/DEMO-42')])
+        self.assertEqual([r[:3] for r in self.rows()], [('alice/backend', 'api', 'main/DEMO-42')])
 
 
 class TokenTest(GatewayCase):
@@ -190,7 +178,28 @@ class TokenTest(GatewayCase):
         self.assertTrue(self.ask(['get', 'other/DEMO-42'], user='bob')['ok'])
         self.assertIn('no Jira token for main', self.ask(['get', 'DEMO-42'], user='bob')['error'])
         self.assertIn('is set', self.ask(['--jira', 'other', 'token', 'status'], user='bob')['out'])
-        self.assertIn('service secret', self.ask(['token', 'set'], text='x-pat')['error'])  # not for the admin
+
+
+class RegisterTest(GatewayCase):
+    def test_register_issues_service_token_revoke_forgets(self):
+        with self.assertRaises(commands.AgentError):
+            auth.register(self.cfg, 'main', 'bad-pat', make_jira=self.make_jira)
+        self.assertFalse(self.cfg.user_secret_path('bad', 'main').exists())
+
+        got = auth.register(self.cfg, 'main', 'carol-pat\n', make_jira=self.make_jira)
+        self.assertEqual(got.login, 'carol')  # the login is what Jira says, nothing else
+        self.assertEqual(self.cfg.user_secret_path('carol', 'main').read_text(), 'carol-pat\n')
+        self.assertEqual(auth.authenticate(self.cfg, got.token), 'carol')
+        self.assertNotIn(got.token, [r['token_hash'] for r in self.users.all()])
+        self.assertTrue(self.ask(['get', 'DEMO-42'], user='carol')['ok'])
+
+        again = auth.register(self.cfg, 'main', 'carol-pat', make_jira=self.make_jira)  # renewal: the old token dies
+        self.assertNotEqual(again.token, got.token)
+        with self.assertRaises(commands.AgentError):
+            auth.authenticate(self.cfg, got.token)
+        self.assertTrue(self.users.revoke('carol'))
+        with self.assertRaises(commands.AgentError):
+            auth.authenticate(self.cfg, again.token)
 
 
 class WatchTest(GatewayCase):
@@ -209,25 +218,25 @@ class WatchTest(GatewayCase):
         self.patch(hub, 'post', post)
 
     def test_watch_outbounds_and_sites(self):
-        reply = self.ask(['watch', 'DEMO-42'])  # to the agent's watch_to
+        self.assertIn('where to send updates?', self.ask(['watch', 'DEMO-42'])['error'])  # the address is explicit
+        reply = self.ask(['watch', 'DEMO-42', 'team:@backend'])
         self.assertTrue(reply['ok'], reply)
         self.assertEqual(self.posts, [('team:@backend', 'demo-42-snapshot')])
-        self.assertEqual(self.state.address_owners('main/DEMO-42'), {'team:@backend': 'backend'})
-        self.assertEqual(self.rows(), [('backend', 'watch', 'main/DEMO-42', 'team:@backend')])
+        self.assertEqual(self.state.address_owners('main/DEMO-42'), {'team:@backend': 'alice/backend'})
+        self.assertEqual(self.rows(), [('alice/backend', 'watch', 'main/DEMO-42', 'team:@backend')])
 
         self.assertTrue(self.ask(['watch', 'other/DEMO-42', 'me:alice'])['ok'])  # same key, another site
         self.assertEqual(self.state.addresses('main/DEMO-42'), ['team:@backend'])
         self.assertEqual(self.state.addresses('other/DEMO-42'), ['me:alice'])
         self.assertIn('connected: team, me', self.ask(['watch', 'DEMO-42', 'nohub:@x'])['error'])
 
-        # bob: needs his own token for the site, and only his outbounds
+        # bob: needs his own token for the site; any outbound
         self.assertIn('no Jira token for main', self.ask(['watch', 'DEMO-42', 'team:@backend:bob'], user='bob')['error'])
         self.give_token('bob', 'main')
-        self.assertIn('only in hubs team', self.ask(['watch', 'DEMO-42', 'me:alice'], user='bob')['error'])
         self.assertTrue(self.ask(['watch', 'DEMO-42', 'team:@backend:bob'], user='bob')['ok'])
         self.assertEqual(self.state.address_owners('main/DEMO-42'),
-                         {'team:@backend': 'backend', 'team:@backend:bob': 'bob/backend'})
-        self.assertNotIn('me:alice', self.ask(['watching'], user='bob')['out'])
+                         {'team:@backend': 'alice/backend', 'team:@backend:bob': 'bob/backend'})
+        self.assertIn('me:alice', self.ask(['watching'], user='bob')['out'])
 
         self.assertTrue(self.ask(['unwatch', 'DEMO-42', '--jira', 'other'])['ok'])
         self.assertIsNone(self.state.tracked('other/DEMO-42'))
@@ -236,22 +245,13 @@ class WatchTest(GatewayCase):
 
 
 class SitesTest(GatewayCase):
-    def test_sites_for_admin_and_user(self):
-        out = self.ask(['sites'])['out']
-        self.assertIn('* main         https://jira.example.com  (service secret)', out)
-        self.assertIn('  other        https://jira.other.example.com  (service secret)', out)
-        self.assertIn('you: alice (the admin)', out)
-        self.assertIn('agent backend may change: main/DEMO', out)
-        self.assertIn('watch to: team:…, me:…; default team:@backend', out)
-
+    def test_sites(self):
         self.give_token('bob', 'other')
         out = self.ask(['sites'], user='bob', who='scratch')['out']
         self.assertIn('* main         https://jira.example.com  (no token yet, set it with jira token set --jira main)', out)
         self.assertIn('other        https://jira.other.example.com  (your token set)', out)
-        self.assertIn('you: bob\n', out)
-        self.assertIn('agent scratch may change: nothing (read and watch only)', out)
-        self.assertIn('watch to: team:…', out)
-        self.assertNotIn('me:', out)
+        self.assertIn('you: bob; agent scratch', out)
+        self.assertIn('watch to: team:…, me:…', out)
 
 
 if __name__ == '__main__':

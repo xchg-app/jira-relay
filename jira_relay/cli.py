@@ -79,8 +79,7 @@ def cmd_run(cfg: config.Config, args) -> int:
 def cmd_agent(cfg: config.Config, args) -> int:
     """Agent request from bin/jira (JSON on stdin) -> JSON reply on stdout. Does not block the poll cycle.
 
-    --user is the account on the service host: the client substitutes `id -un` on the host (never taken from the request JSON);
-    without it, the owner."""
+    --user is a registered login, resolved by the caller (never taken from the request JSON)."""
     try:
         reply = service.serve(cfg, args.user, json.load(sys.stdin))
     except ValueError as e:
@@ -148,7 +147,7 @@ def build_parser() -> argparse.ArgumentParser:
     admin.add_parsers(sub)
 
     agent_cmd = sub.add_parser('agent', help='agent request from bin/jira: JSON on stdin, JSON reply on stdout')
-    agent_cmd.add_argument('--user', default='', help='user: the account on the service host; without it, the admin')
+    agent_cmd.add_argument('--user', default='', help='the registered login the request is from')
     agent_cmd.set_defaults(handler=cmd_agent)
     return parser
 

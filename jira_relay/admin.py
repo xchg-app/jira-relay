@@ -1,13 +1,15 @@
 """Admin commands on the service host: `jira-relay setup|jira|outbound|user ...`.
 
-Knows both halves (tracker outbounds, gateway users and tokens), like cli.py; tracker and gateway do not import it.
+Knows both halves (tracker outbounds, gateway users), like cli.py; tracker and gateway do not import it. Users
+register themselves (gateway/auth.py); the host only lists and revokes them.
 """
 import shutil
 import sys
 from dataclasses import replace
 
 from . import config
-from .config import Agent, Config, ConfigError, Outbound, Site, User
+from .config import Config, ConfigError, Outbound, Site
+from .gateway.auth import Users
 from .jira import AUTH_KINDS, Jira, JiraError, make_auth
 from .tracker import ops, outbounds
 
@@ -69,7 +71,7 @@ def cmd_outbound(cfg: Config, args) -> int:
     if args.action == 'ls':
         for o in cfg.outbounds.values():
             options = ', '.join(f'{k} {v}' for k, v in o.options.items())
-            say(f'{o.name:<12} {o.type}  {options}' + (f'  owner {o.owner}' if o.owner else '  shared'))
+            say(f'{o.name:<12} {o.type}  {options}' + (f'  owner {o.owner}' if o.owner else ''))
         if not cfg.outbounds:
             say('no outbounds: jira-relay outbound add <name> --type xchg --remote <git url> --login <bot login>')
         return 0
@@ -78,7 +80,8 @@ def cmd_outbound(cfg: Config, args) -> int:
         if name in cfg.outbounds:
             raise ConfigError(f'outbound {name} exists')
         options = {k: v for k, v in (('remote', args.remote), ('login', args.bot_login)) if v}
-        cfg = replace(cfg, outbounds={**cfg.outbounds, name: Outbound(name, args.type, options, args.owner or '')})
+        owner = config.check_login(args.owner) if args.owner else ''
+        cfg = replace(cfg, outbounds={**cfg.outbounds, name: Outbound(name, args.type, options, owner)})
         outbounds.driver(cfg, name)  # validates type and options before saving
         config.save(cfg)
         say(f'outbound {name} added; credentials: jira-relay outbound key {name} < file')
@@ -103,88 +106,33 @@ def cmd_outbound(cfg: Config, args) -> int:
     elif args.action == 'owner':
         if name not in cfg.outbounds:
             raise ConfigError(f'no outbound {name}')
-        owner = args.owner_login or ''
-        if owner and owner not in cfg.users:
-            raise ConfigError(f'no user {owner}')
+        owner = config.check_login(args.owner_login) if args.owner_login else ''
         config.save(replace(cfg, outbounds={**cfg.outbounds, name: replace(cfg.outbounds[name], owner=owner)}))
         say(f'outbound {name}: ' + (f'personal, owner {owner}' if owner else 'shared'))
     return 0
 
 
-# --- users and their agents -----------------------------------------------------------------------
-def _outbounds(cfg: Config, value) -> tuple[str, ...]:
-    names = _csv(value)
-    if unknown := [n for n in names if n not in cfg.outbounds]:
-        raise ConfigError(f'unknown outbound {", ".join(unknown)} (configured: {", ".join(cfg.outbounds) or "none"})')
-    return names
-
-
-def _projects(cfg: Config, value) -> tuple[str, ...]:
-    """"*", "site/*" or "site/PROJ" on a configured site; the project key is uppercased."""
-    result = []
-    for item in _csv(value):
-        if item == '*':
-            result.append(item)
-            continue
-        site, _, project = item.partition('/')
-        if not project or not (project == '*' or project.isalnum()):
-            raise ConfigError(f'project "{item}": <site>/<PROJECT>, <site>/* or *')
-        cfg.site(site)  # unknown site: ConfigError with the configured ones
-        result.append(f'{site}/{project.upper()}')
-    return tuple(result)
-
-
-def _csv(value: str | None) -> tuple[str, ...]:
-    return tuple(v.strip() for v in (value or '').split(',') if v.strip())
-
-
+# --- users ----------------------------------------------------------------------------------------
 def cmd_user(cfg: Config, args) -> int:
-    if args.action == 'ls':
-        for u in cfg.users.values():
-            role = 'admin' if u.login == cfg.admin else f'outbounds: {", ".join(cfg.outbounds_of(u.login)) or "none"}'
-            tokens = [s for s in cfg.sites if u.login == cfg.admin or cfg.user_secret_path(u.login, s).exists()]
-            say(f'{u.login:<14} {role}; Jira: {", ".join(tokens) or "no token yet"}')
-            for name, a in u.agents.items():
-                say(f'  agent {name}: projects {", ".join(a.projects) or "none"}'
-                    + (f'; watch_to {a.watch_to}' if a.watch_to else ''))
-        return 0
-    login = args.login
-    if not config.LOGIN_RE.match(login):
-        raise ConfigError(f'login "{login}": [A-Za-z0-9._-]')
-    if args.action == 'add':
-        if login in cfg.users:
-            raise ConfigError(f'user {login} exists')
-        users = {**cfg.users, login: User(login, _outbounds(cfg, args.outbounds))}
-        config.save(replace(cfg, users=users, admin=cfg.admin or login))
-        say(f'user {login} added as the admin; their agents act with the service secret of each Jira site' if not cfg.admin
-            else f'user {login} added; the user puts their own Jira token: jira token set [--jira SITE] (from their agent client)')
-        return 0
-    user = cfg.users.get(login)
-    if not user:
-        raise ConfigError(f'no user {login}')
-    if args.action == 'rm':
-        if login == cfg.admin:
-            raise ConfigError('the admin cannot be removed')
-        config.save(replace(cfg, users={n: u for n, u in cfg.users.items() if n != login}))
+    """Users register themselves with a Jira token (gateway/auth.py); here they are listed and revoked."""
+    users = Users(cfg.state_path)
+    try:
+        if args.action == 'ls':
+            for u in users.all():
+                tokens = [s for s in cfg.sites if cfg.user_secret_path(u['login'], s).exists()]
+                say(f'{u["login"]:<14} registered {u["created"][:10]}, last seen {(u["last_seen"] or "never")[:10]}; '
+                    f'Jira: {", ".join(tokens) or "no token"}')
+            if not users.all():
+                say('no users yet: they register themselves with their Jira token (jira register)')
+            return 0
+        login = config.check_login(args.login)
+        if not users.revoke(login):
+            raise ConfigError(f'no user {login}')
         shutil.rmtree(cfg.secrets_dir / 'users' / login, ignore_errors=True)
-        say(f'user {login} removed with their Jira tokens')
-    elif args.action == 'outbounds':
-        config.save(replace(cfg, users={**cfg.users, login: replace(user, outbounds=_outbounds(cfg, args.names))}))
-        say(f'user {login}: shared outbounds {", ".join(_csv(args.names)) or "none"}')
-    elif args.action == 'agent':
-        name = config.check_name('agent', args.agent)
-        agents = dict(user.agents)
-        if args.remove:
-            agents.pop(name, None)
-        else:
-            agents[name] = Agent(_projects(cfg, args.projects), args.watch_to or '')
-            if args.watch_to:
-                outbounds.parse_address(cfg, args.watch_to)
-        config.save(replace(cfg, users={**cfg.users, login: replace(user, agents=agents)}))
-        say(f'user {login}: agent {name} ' + ('removed' if args.remove else
-            f'projects {", ".join(agents[name].projects) or "none"}'
-            + (f'; watch_to {args.watch_to}' if args.watch_to else '')))
-    return 0
+        say(f'user {login} revoked with their Jira tokens; issues they watched stay tracked (jira-relay ls)')
+        return 0
+    finally:
+        users.db.close()
 
 
 def add_parsers(sub) -> None:
@@ -199,34 +147,21 @@ def add_parsers(sub) -> None:
     p.set_defaults(handler=cmd_jira, need=('name',), need_add=('url',))
 
     p = sub.add_parser('outbound', help='where changes go: ls | add NAME --type xchg --remote URL --login BOT '
-                                        '[--owner LOGIN] | key NAME < file | owner NAME [LOGIN] | rm NAME')
+                                        '[--owner LOGIN] | key NAME < file | hostkey NAME < file | owner NAME [LOGIN] | '
+                                        'rm NAME')
     p.add_argument('action', choices=('ls', 'add', 'rm', 'key', 'hostkey', 'owner'))
     p.add_argument('name', nargs='?')
-    p.add_argument('owner_login', nargs='?', metavar='login', help='owner: login of a personal outbound; none — shared')
+    p.add_argument('owner_login', nargs='?', metavar='login', help='owner: whose outbound it is (informational)')
     p.add_argument('--type', default='xchg', choices=tuple(outbounds.TYPES))
     p.add_argument('--remote')
     p.add_argument('--owner')
     p.add_argument('--login', dest='bot_login', help='xchg: the bot login in the hub')
     p.set_defaults(handler=cmd_outbound, need=('name',))
 
-    p = sub.add_parser('user', help='users: ls | add LOGIN [--outbounds a,b] | rm LOGIN | outbounds LOGIN a,b | '
-                                    'agent LOGIN NAME --projects site/PROJ,... [--watch-to ADDR] [--remove]')
-    p.add_argument('action', choices=('ls', 'add', 'rm', 'outbounds', 'agent'))
+    p = sub.add_parser('user', help='registered users (they register themselves): ls | revoke LOGIN')
+    p.add_argument('action', choices=('ls', 'revoke'))
     p.add_argument('login', nargs='?')
-    p.add_argument('agent', nargs='?', help='agent: the agent name (its project in xchg); outbounds: comma list')
-    p.add_argument('--outbounds')
-    p.add_argument('--projects')
-    p.add_argument('--watch-to')
-    p.add_argument('--remove', action='store_true')
-    p.set_defaults(handler=_user, need=('login',))
-
-
-def _user(cfg: Config, args) -> int:
-    if args.action == 'outbounds':
-        args.names = args.agent
-    elif args.action == 'agent' and not args.agent:
-        raise ConfigError('user agent LOGIN NAME --projects ...: the agent name is required')
-    return cmd_user(cfg, args)
+    p.set_defaults(handler=cmd_user, need=('login',))
 
 
 def check_args(args) -> None:

@@ -6,6 +6,13 @@ Written for people and agents: what changed in behavior, not which files were to
 
 ## [Unreleased]
 
+### Breaking
+- Users register themselves with their Jira token instead of being added by the admin: the login is what Jira
+  says the token's owner is, and the user gets a service token for the `jira` client. `admin`, `[users.*]`, agent
+  `projects` and `watch_to` are gone from the config; `jira-relay user` is `ls | revoke LOGIN`. Every registered user
+  may change any issue their Jira account can, and watch into any configured outbound; `jira watch` always takes an
+  explicit address. The journal names every agent `<login>/<agent>`.
+
 ## [0.5.0] — 2026-11-05
 
 ### Breaking
