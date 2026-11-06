@@ -214,7 +214,6 @@ class WatchTest(GatewayCase):
         def post(address, slug, ref, body, dry_run=False, attach=()):
             self.posts.append((address, slug))
             return ''
-        self.patch(Config, 'jira', lambda cfg, site=None: FakeJira())
         self.patch(hub, 'post', post)
 
     def test_watch_outbounds_and_sites(self):

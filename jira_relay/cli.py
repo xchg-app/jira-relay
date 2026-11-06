@@ -25,7 +25,7 @@ def snapshot_mode(args) -> str:
 
 
 def cmd_show(cfg: config.Config, args) -> int:
-    ops.show(cfg, args.key, args.with_subtasks, args.raw)
+    ops.show(cfg, args.key, args.with_subtasks, args.raw, args.by or '')
     return 0
 
 
@@ -47,7 +47,7 @@ def cmd_to(cfg: config.Config, args) -> int:
 
 
 def cmd_subtasks(cfg: config.Config, args) -> int:
-    ops.subtasks(cfg, args.key, args.mode == 'on', snapshot_mode(args))
+    ops.subtasks(cfg, args.key, args.mode == 'on', snapshot_mode(args), owner(args))
     return 0
 
 
@@ -102,6 +102,7 @@ def build_parser() -> argparse.ArgumentParser:
     show.add_argument('key', nargs='?')
     show.add_argument('--with-subtasks', action='store_true', help='also snapshots of subtasks')
     show.add_argument('--raw', metavar='FILE', help='read the issue JSON from a file instead of Jira')
+    show.add_argument('--by', metavar='LOGIN', help='whose Jira token reads the issue')
     show.set_defaults(handler=cmd_show)
 
     add = sub.add_parser('add', help='track an issue: DEMO-42 team:@backend [me:alice ...]')
@@ -109,7 +110,8 @@ def build_parser() -> argparse.ArgumentParser:
     add.add_argument('addresses', nargs='+', metavar='address',
                      help='hub[:@project][:person]; hub alone means everyone in the hub')
     add.add_argument('--with-subtasks', action='store_true', help='with subtasks; new ones are picked up automatically')
-    add.add_argument('--by', metavar='LOGIN', help='the registered user who watches it (polling uses their token)')
+    add.add_argument('--by', metavar='LOGIN', required=True, help='the registered user who watches it: their Jira token '
+                                                                 'reads the issue, now and when polling')
     choice = add.add_mutually_exclusive_group()
     choice.add_argument('--yes', action='store_true', help='send the snapshot without asking')
     choice.add_argument('--no-snapshot', action='store_true', help='do not send the snapshot')
@@ -119,6 +121,7 @@ def build_parser() -> argparse.ArgumentParser:
     subtasks = sub.add_parser('subtasks', help='pick up subtasks of an already tracked issue: DEMO-41 on')
     subtasks.add_argument('key')
     subtasks.add_argument('mode', choices=('on', 'off'))
+    subtasks.add_argument('--by', metavar='LOGIN', help='whose Jira token reads the subtasks (default: a watcher\'s)')
     choice = subtasks.add_mutually_exclusive_group()
     choice.add_argument('--yes', action='store_true', help='send snapshots of existing subtasks without asking')
     choice.add_argument('--no-snapshot', action='store_true', help='do not send snapshots of existing subtasks')

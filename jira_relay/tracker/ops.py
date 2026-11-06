@@ -10,6 +10,9 @@ snapshot: what to do with snapshots for new addresses and issues: 'ask' (ask in 
 
 owner: who asks, (login, agent); None — a host command, the address gets no owner. Two owners of one address share
 it (state.py): the second gets no snapshot, the issue is published there once.
+
+There is no service account: Jira is read with the token of the owner who asks, or, for an issue's own operations
+(subtasks, polling), of its first owner who has one (poll.py).
 """
 import json
 import re
@@ -23,7 +26,7 @@ from ..jira import JiraError
 from ..mask import mask
 from . import hub, outbounds
 from .attachments import prepare
-from .poll import Poller, log
+from .poll import log, poll_site, polling_jira
 from .state import State
 
 KEY_RE = re.compile(r'^[A-Z][A-Z0-9_]*-\d+$')
@@ -71,14 +74,15 @@ def render_snapshot(cfg: config.Config, raw: dict, with_subtasks: bool,
     return issue, body, masked
 
 
-def show(cfg: config.Config, key: str | None, with_subtasks: bool, raw_file: str | None = None) -> None:
-    """Issue snapshot to stdout, sending nothing; raw_file: issue JSON from a file instead of Jira."""
+def show(cfg: config.Config, key: str | None, with_subtasks: bool, raw_file: str | None = None,
+         by: str = '') -> None:
+    """Issue snapshot to stdout, sending nothing; raw_file: issue JSON from a file instead of Jira (by: whose token)."""
     if raw_file:
         raws = [json.loads(Path(raw_file).read_text())]
         site = cfg.default_site if cfg.sites else None
     else:
         site, key = split(parse_ref(cfg, key))
-        jira = cfg.jira(site)
+        jira = _jira(cfg, site, by)
         raws = [jira.issue(key)] + (list(jira.search(f'parent = {key}')) if with_subtasks else [])
     for i, raw in enumerate(raws):
         _, body, masked = render_snapshot(cfg, raw, with_subtasks=with_subtasks and i == 0, site=site)
@@ -154,6 +158,24 @@ def _owner(owner: Owner) -> tuple[str, str]:
     return owner or ('', '')
 
 
+def _jira(cfg: config.Config, site: str, login: str):
+    try:
+        return cfg.need_user_jira(login, site)
+    except config.ConfigError as e:
+        raise TrackerError(str(e)) from None
+
+
+def _owners_jira(cfg: config.Config, state: State, ref: str, owner: Owner):
+    """Jira for an operation on a tracked issue: the asking owner's, else the first watcher's with a token."""
+    site, _ = split(ref)
+    if owner:
+        return _jira(cfg, site, owner[0])
+    jira = polling_jira(cfg, state, ref)
+    if jira is None:
+        raise TrackerError(f'no watcher of {ref} has a Jira token for {site}; say whose to use: --by LOGIN')
+    return jira
+
+
 def add(cfg: config.Config, ref: str, addresses: list[str], with_subtasks: bool, snapshot: str,
         owner: Owner = None) -> None:
     ref, addresses = parse_ref(cfg, ref), parse_addresses(cfg, addresses)
@@ -163,7 +185,7 @@ def add(cfg: config.Config, ref: str, addresses: list[str], with_subtasks: bool,
         raise TrackerError(f'{ref} is already tracked ({where}); to add an address: jira-relay to {ref} add <address>')
 
     site, key = split(ref)
-    jira = cfg.jira(site)
+    jira = _jira(cfg, site, _owner(owner)[0])
     found = [(jira.issue(key), None)] + (_subtasks_in_jira(jira, state, site, ref) if with_subtasks else [])
     with tempfile.TemporaryDirectory() as tmp:
         refs = publish_snapshots(cfg, state, jira, site, found, addresses, with_subtasks, snapshot, Path(tmp))
@@ -191,7 +213,7 @@ def add_address(cfg: config.Config, ref: str, target: str, snapshot: str, owner:
     if target in current:
         raise TrackerError(f'{ref} is already published to {target}')
     site, key = split(ref)
-    jira = cfg.jira(site)
+    jira = _owners_jira(cfg, state, ref, owner)
     found = [(jira.issue(key), None)] + [(jira.issue(split(sub)[1]), ref) for sub in state.subtasks(ref)]
     with tempfile.TemporaryDirectory() as tmp:
         publish_snapshots(cfg, state, jira, site, found, [target], bool(row['with_subtasks']), snapshot, Path(tmp))
@@ -213,7 +235,7 @@ def remove_address(cfg: config.Config, ref: str, target: str) -> None:
     print(f'{ref}: no longer published to {target}; remaining: {", ".join(a for a in current if a != target)}')
 
 
-def subtasks(cfg: config.Config, ref: str, on: bool, snapshot: str) -> None:
+def subtasks(cfg: config.Config, ref: str, on: bool, snapshot: str, owner: Owner = None) -> None:
     """Turn picking up subtasks of an already tracked issue on or off.
 
     The poll only sees subtasks updated within the window, so turning it on sends snapshots of the
@@ -234,7 +256,7 @@ def subtasks(cfg: config.Config, ref: str, on: bool, snapshot: str) -> None:
         return
 
     site, _ = split(ref)
-    jira = cfg.jira(site)
+    jira = _owners_jira(cfg, state, ref, owner)
     with tempfile.TemporaryDirectory() as tmp:
         refs = publish_snapshots(cfg, state, jira, site, _subtasks_in_jira(jira, state, site, ref),
                                  state.addresses(ref), True, snapshot, Path(tmp))
@@ -296,7 +318,7 @@ def watch(cfg: config.Config, ref: str, targets: list[str], with_subtasks: bool,
     joined = [t for t in wanted if t in current and owner and not state.is_owner(ref, t, owner[0])]
     turn_on = with_subtasks and not row['with_subtasks']
     if turn_on:
-        subtasks(cfg, ref, True, snapshot)
+        subtasks(cfg, ref, True, snapshot, owner)
     for target in new:
         add_address(cfg, ref, target, snapshot, owner)
     for target in joined:
@@ -366,9 +388,9 @@ def poll_once(cfg: config.Config, dry_run: bool) -> int:
             except (outbounds.OutboundError, hub.HubError) as e:
                 log(f'sync {name}: {e}')
     state, post, failed = open_state(cfg), outbounds.poster(cfg), 0
-    for site in cfg.sites:  # one site failing (network, token) does not stop the others
+    for site in cfg.sites:  # one site failing (network) does not stop the others
         try:
-            failed |= Poller(cfg, state, cfg.jira(site), post, dry_run=dry_run, site=site).run()
+            failed |= poll_site(cfg, state, post, site, dry_run)
         except (config.ConfigError, JiraError) as e:
             log(f'{site}: cycle failed: {e}')
             failed = 1

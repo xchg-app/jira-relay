@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
+from unittest import mock
 
 from jira_relay import render
 from jira_relay.config import Config, Outbound, Site
@@ -16,7 +17,7 @@ from jira_relay.jira import JiraError
 from jira_relay.mask import mask
 from jira_relay.tracker.address import AddressError, parse
 from jira_relay.tracker.hub import HubError
-from jira_relay.tracker.poll import Poller
+from jira_relay.tracker.poll import poll_site
 from jira_relay.tracker.state import State
 
 RAW = json.loads((Path(__file__).parent / 'fixtures' / 'issue.json').read_text())
@@ -112,7 +113,8 @@ class FakeJira:
 
 
 class PollTest(unittest.TestCase):
-    """A real sqlite state; Jira and the outbound are fakes."""
+    """A real sqlite state; Jira and the outbound are fakes. Issues are watched by alice; polling runs with the Jira
+    her token gives (self.jiras[login]; None — no token)."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -121,13 +123,13 @@ class PollTest(unittest.TestCase):
                           outbounds={n: Outbound(n, 'xchg') for n in ('team', 'me')})
         self.state = State(self.cfg.state_path)
         self.addCleanup(self.state.db.close)
-        self.posts, self.failing = [], set()
+        self.posts, self.failing, self.jiras = [], set(), {}
 
-    def track(self, key, raw, addresses, with_subtasks=False):
+    def track(self, key, raw, addresses, with_subtasks=False, by='alice'):
         ref = f'main/{key}'
         self.state.track(ref, with_subtasks, None)
         for address in addresses:
-            self.state.add_address(ref, address)
+            self.state.add_address(ref, address, by)
             self.state.save_delivery(ref, address, normalize(raw), last_history_id(raw))
 
     def post(self, address, slug, ref, body, dry_run, attach=()):
@@ -136,9 +138,11 @@ class PollTest(unittest.TestCase):
         self.posts.append((address, slug, ref, body))
         return ''
 
-    def poll(self, jira):
-        with redirect_stdout(io.StringIO()):
-            return Poller(self.cfg, self.state, jira, self.post).run()
+    def poll(self, jira, **jiras):
+        self.jiras = {'alice': jira, **jiras}
+        with redirect_stdout(io.StringIO()), \
+                mock.patch.object(Config, 'user_jira', lambda cfg, login, site=None: self.jiras.get(login)):
+            return poll_site(self.cfg, self.state, self.post, 'main')
 
     def sent(self):
         return [(address, slug) for address, slug, _, _ in self.posts]
@@ -185,6 +189,23 @@ class PollTest(unittest.TestCase):
         self.assertEqual(len(self.posts), 2)
         self.poll(FakeJira(RAW, edited(subtask, status={'name': 'Done'})))
         self.assertEqual(self.sent()[2:], [('team:@backend', 'demo-47-status'), ('me:alice', 'demo-47-status')])
+
+    def test_rejected_token_rotates_then_pauses(self):
+        self.track('DEMO-42', RAW, ['team:@backend'])
+        self.state.add_address('main/DEMO-42', 'team:@backend', 'bob')
+        changed = FakeJira(edited(status={'name': 'Review'}))
+        rejecting = mock.Mock(search=mock.Mock(side_effect=JiraError(401, 'expired')))
+        self.assertEqual(self.poll(rejecting, bob=changed), 0)  # alice's token is dead: bob's reads the issue
+        self.assertEqual(self.sent(), [('team:@backend', 'demo-42-status')])
+
+        self.assertEqual(self.poll(rejecting, bob=None), 0)  # nobody can read it: one note, then silence
+        self.assertEqual(self.poll(rejecting, bob=None), 0)
+        self.assertEqual(self.sent()[1:], [('team:@backend', 'demo-42-paused')])
+        self.assertIn('alice, bob', self.posts[1][3])
+        self.assertIsNotNone(self.state.get_meta('paused:main/DEMO-42'))
+        self.assertEqual(self.poll(FakeJira(edited(status={'name': 'Done'}))), 0)  # alice registered again
+        self.assertEqual(self.sent()[2:], [('team:@backend', 'demo-42-status')])
+        self.assertIsNone(self.state.get_meta('paused:main/DEMO-42'))
 
 
 class MigrationTest(unittest.TestCase):

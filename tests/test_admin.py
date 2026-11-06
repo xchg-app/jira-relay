@@ -50,14 +50,13 @@ class ConfigTest(unittest.TestCase):
             again = config.load(directory)
             self.assertEqual(config.dump(again), config.dump(cfg))
 
-            with self.assertRaises(config.ConfigError):
-                cfg.jira('main')  # no service secret yet
-            config.write_secret(cfg.site_secret_path('main'), 'service-pat\n')
-            self.assertEqual(oct(cfg.site_secret_path('main').stat().st_mode & 0o777), '0o600')
             self.assertIsNone(cfg.user_jira('bob', 'main'))
+            with self.assertRaises(config.ConfigError):
+                cfg.need_user_jira('bob', 'main')
             config.write_secret(cfg.user_secret_path('bob', 'main'), 'bob-pat')
+            self.assertEqual(oct(cfg.user_secret_path('bob', 'main').stat().st_mode & 0o777), '0o600')
             self.assertEqual(cfg.user_jira('bob', 'main').auth.secrets(), ['bob-pat'])
-            self.assertNotIn('service-pat', (directory / 'config' / 'jira-relay.toml').read_text())
+            self.assertNotIn('bob-pat', (directory / 'config' / 'jira-relay.toml').read_text())
 
 
 class AdminCliTest(unittest.TestCase):
@@ -85,10 +84,6 @@ class AdminCliTest(unittest.TestCase):
         cfg = lambda: config.load(Path(self.tmp.name))
         self.ok('jira', 'add', 'main', 'https://jira.example.com/')
         self.assertEqual(self.run_cli('jira', 'add', 'Bad', 'https://x')[0], 1)
-        with mock.patch('jira_relay.admin.Jira.whoami', return_value='jira-bot'):
-            out = self.ok('jira', 'secret', 'main', stdin='service-pat\n')
-        self.assertIn('acts as jira-bot', out)
-        self.assertNotIn('service-pat', out)
 
         self.ok('outbound', 'add', 'team', '--remote', 'git@git.example.com:team/hub.git', '--login', 'jira-bot')
         self.ok('outbound', 'add', 'me', '--remote', 'git@git.example.com:alice/p.git', '--login', 'b', '--owner', 'alice')

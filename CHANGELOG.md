@@ -16,6 +16,10 @@ Written for people and agents: what changed in behavior, not which files were to
   change), `jira unwatch` only leaves the watchers, the address goes with its last watcher. `ls`/`jira watching`
   list the watchers per address. Addresses added on the host take `--by LOGIN`; `jira-relay user claim LOGIN`
   adopts the ones without a watcher (needed once after the upgrade for the admin's old addresses).
+- No service account: `jira-relay jira secret` is gone, polling and snapshots run with the watchers' own Jira
+  tokens, grouped by watcher. A rejected token hands the issues to the next watcher; an issue none of them can read
+  gets one "tracking paused" note (slug `<key>-paused`) and waits for a watcher to register again. Host commands
+  that read Jira take `--by LOGIN` (`add` requires it).
 
 ## [0.5.0] — 2026-11-05
 

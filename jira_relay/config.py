@@ -1,7 +1,6 @@
 """Settings: one TOML file in the data directory, secrets in files next to it.
 
     <data>/config/jira-relay.toml        what is connected: Jira sites and outbounds
-    <data>/secrets/jira/<site>           service secret of a Jira site (for pat, the token): polling
     <data>/secrets/outbound/<name>/      outbound credentials (xchg: ssh_key)
     <data>/secrets/users/<login>/<site>  a user's own Jira secret, saved at registration (gateway/auth.py)
     <data>/state/                        tracker state, registered users and the gateway journal
@@ -87,9 +86,6 @@ class Config:
     def secrets_dir(self) -> Path:
         return self.data_dir / 'secrets'
 
-    def site_secret_path(self, site: str) -> Path:
-        return self.secrets_dir / 'jira' / site
-
     def user_secret_path(self, login: str, site: str) -> Path:
         return self.secrets_dir / 'users' / login / site
 
@@ -111,19 +107,21 @@ class Config:
         except KeyError:
             raise ConfigError(f'unknown Jira site "{name}" (configured: {", ".join(self.sites) or "none"})') from None
 
-    def jira(self, site: str | None = None) -> Jira:
-        """Client with the service secret of the site: polling and snapshots."""
-        s = self.site(site)
-        secret = read_secret(self.site_secret_path(s.name))
-        if not secret:
-            raise ConfigError(f'no secret for Jira site "{s.name}": jira-relay jira secret {s.name} < file')
-        return Jira(s.url, make_auth(s.auth, secret))
-
     def user_jira(self, login: str, site: str | None = None) -> Jira | None:
-        """Client acting as the user with their own secret for the site (None — not set yet)."""
+        """Client acting as the user with their own secret for the site (None — not set yet). Every Jira call,
+        polling included, is somebody's: there is no service account."""
         s = self.site(site)
         secret = read_secret(self.user_secret_path(login, s.name))
         return Jira(s.url, make_auth(s.auth, secret)) if secret else None
+
+    def need_user_jira(self, login: str, site: str | None = None) -> Jira:
+        if not login:
+            raise ConfigError('whose Jira token to use? --by LOGIN (a registered user)')
+        jira = self.user_jira(login, site)
+        if jira is None:
+            raise ConfigError(f'{login} has no Jira token for {self.site(site).name}: they register (jira register), '
+                              f'or add it from their agent (jira token set --jira {self.site(site).name})')
+        return jira
 
     # --- outbounds --------------------------------------------------------------------------------
     @property

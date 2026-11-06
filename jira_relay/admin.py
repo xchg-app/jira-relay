@@ -10,7 +10,7 @@ from dataclasses import replace
 from . import config
 from .config import Config, ConfigError, Outbound, Site
 from .gateway.auth import Users
-from .jira import AUTH_KINDS, Jira, JiraError, make_auth
+from .jira import AUTH_KINDS
 from .tracker import ops, outbounds
 from .tracker.state import lock
 
@@ -39,8 +39,7 @@ def read_stdin(what: str) -> str:
 def cmd_jira(cfg: Config, args) -> int:
     if args.action == 'ls':
         for s in cfg.sites.values():
-            secret = 'secret set' if cfg.site_secret_path(s.name).exists() else 'NO SECRET'
-            say(f'{s.name:<12} {s.url}  auth {s.auth}, {secret}' + ('  (default)' if s.name == cfg.default_site else ''))
+            say(f'{s.name:<12} {s.url}  auth {s.auth}' + ('  (default)' if s.name == cfg.default_site else ''))
         if not cfg.sites:
             say('no Jira sites: jira-relay jira add <name> <url>')
         return 0
@@ -49,21 +48,11 @@ def cmd_jira(cfg: Config, args) -> int:
         if name in cfg.sites:
             raise ConfigError(f'Jira site {name} exists')
         config.save(replace(cfg, sites={**cfg.sites, name: Site(name, args.url.rstrip('/'), args.auth)}))
-        say(f'Jira site {name} added; service secret: jira-relay jira secret {name} < file')
+        say(f'Jira site {name} added; users register with their tokens for it (jira register)')
     elif args.action == 'rm':
         cfg.site(name)
         config.save(replace(cfg, sites={n: s for n, s in cfg.sites.items() if n != name}))
-        cfg.site_secret_path(name).unlink(missing_ok=True)
         say(f'Jira site {name} removed (tracked issues of it stay in the state until `jira-relay rm`)')
-    elif args.action == 'secret':
-        site = cfg.site(name)
-        secret = read_stdin('the service secret')
-        try:
-            login = Jira(site.url, make_auth(site.auth, secret)).whoami()
-        except JiraError as e:
-            raise ConfigError(f'Jira did not accept the secret ({e})') from None
-        config.write_secret(cfg.site_secret_path(name), secret)
-        say(f'service secret of {name} saved: Jira acts as {login}')
     return 0
 
 
@@ -146,8 +135,8 @@ def add_parsers(sub) -> None:
     p = sub.add_parser('setup', help='container start: connect the outbounds of the config')
     p.set_defaults(handler=cmd_setup)
 
-    p = sub.add_parser('jira', help='Jira sites: ls | add NAME URL [--auth pat] | rm NAME | secret NAME < file')
-    p.add_argument('action', choices=('ls', 'add', 'rm', 'secret'))
+    p = sub.add_parser('jira', help='Jira sites: ls | add NAME URL [--auth pat] | rm NAME')
+    p.add_argument('action', choices=('ls', 'add', 'rm'))
     p.add_argument('name', nargs='?')
     p.add_argument('url', nargs='?')
     p.add_argument('--auth', default='pat', choices=tuple(AUTH_KINDS))

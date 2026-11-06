@@ -197,5 +197,13 @@ def change(issue: dict, changes: dict, base_url: str, tz: str, activity: tuple, 
 def unavailable(key: str, status: int, base_url: str) -> str:
     return (f'# {key} · issue unavailable in Jira, no longer tracked\n\n'
             f'Jira returns {status} for {browse_url(base_url, key)}: the issue was deleted, moved to another project, '
-            f'or the service account has no access to it. Its changes are no longer published; '
-            f'to track it again, run `jira-relay add {key} <@project>` on the service host.\n')
+            f'or none of its watchers has access to it. Its changes are no longer published; '
+            f'to watch it again: `jira watch {key} <address>`.\n')
+
+
+def paused(key: str, base_url: str, watchers: list[str]) -> str:
+    who = ', '.join(watchers) or 'nobody'
+    return (f'# {key} · tracking paused: no working Jira token\n\n'
+            f'Changes of {browse_url(base_url, key)} are not published: Jira no longer accepts the token of any '
+            f'watcher ({who}). A watcher registers again with a fresh token (`jira register`), and publishing '
+            f'resumes with the next poll.\n')

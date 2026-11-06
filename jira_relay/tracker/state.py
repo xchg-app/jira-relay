@@ -192,6 +192,10 @@ class State:
         row = self.db.execute('select value from meta where name = ?', (name,)).fetchone()
         return row['value'] if row else None
 
+    def del_meta(self, name: str) -> None:
+        with self.db:
+            self.db.execute('delete from meta where name = ?', (name,))
+
     def set_meta(self, name: str, value: str) -> None:
         with self.db:
             self.db.execute('insert into meta (name, value) values (?, ?) on conflict(name) do update set value = excluded.value', (name, value))

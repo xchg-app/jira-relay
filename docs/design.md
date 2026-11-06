@@ -95,7 +95,10 @@ lives in code, `compose.yaml` or the image.
 
 ### Poll cycle
 
-Each site is polled by its own `Poller` with its service secret; one site failing does not stop the others.
+There is no service account: a site is polled with its watchers' own Jira tokens (`poll.py: poll_site`). The
+top-level issues of a site are grouped by their first watcher who has a token for it, one `Poller` per watcher. A
+token Jira rejects (401/403) sends that watcher's issues to the next watcher; so does an issue a watcher cannot see
+(403/404). One site failing does not stop the others.
 
 1. JQL: `key in (…) AND updated >= "-Nm"`, then `parent in (…with subtasks…) AND updated >= "-Nm"`,
    `fields=<allowlist>`, `expand=changelog`. Keys in batches of 100. N is the minutes since the last poll plus a
@@ -117,9 +120,13 @@ Each site is polled by its own `Poller` with its service secret; one site failin
    least once": if the process dies between the post and the write, a duplicate is possible.
 6. A new subtask of an issue tracked with `--with-subtasks` is tracked by itself and publishes a **snapshot** without
    confirmation: the flag is the consent.
-7. An issue deleted or unavailable in Jira (404/403) gets one "unavailable, no longer tracked" note and is removed
-   from `tracked`. JQL `key in (…)` with a nonexistent key fails as a whole (400), so such keys are checked one by
-   one and the query is repeated without them.
+7. An issue no watcher can read (deleted, moved, 404/403 for all of them) gets one "unavailable, no longer tracked"
+   note and is removed from `tracked`. JQL `key in (…)` with a nonexistent key fails as a whole (400), so such keys
+   are checked one by one and the query is repeated without them.
+8. An issue whose watchers all have rejected or missing tokens is **paused**: one "tracking paused" note to its
+   addresses (`meta paused:<site>/<KEY>`), then nothing until a watcher registers again with a working token; the
+   next cycle that reads the issue resumes it and publishes the changes accumulated meanwhile (the diff is against
+   the delivered fingerprint, not the window).
 
 ### Attachments
 
@@ -164,7 +171,7 @@ The address is the full outbound address set on the issue, e.g.
 Forms: `team:@backend` (everyone on the project), `team:@backend:bob` (a person's agent on the project),
 `team:carol` (a person), `team` = `team:all` (everyone in the hub). The outbound name is required and must be
 configured. One note per issue per cycle, to each of its addresses.
-Slug: `<key>-snapshot`, `<key>-unavailable` or `<key>-<first change kind>`, e.g. `demo-42-status`, `demo-42-comments`
+Slug: `<key>-snapshot`, `<key>-unavailable`, `<key>-paused` or `<key>-<first change kind>`, e.g. `demo-42-status`
 (kinds in order: `status`, `resolution`, `priority`, `summary`, `assignee`, `fix-versions`, `parent`, `description`,
 `comments`, `links`, `subtasks`, `attachments`).
 The first line of the body (`# …`) is shown in `xchg inbox`, so it carries the key and the gist of the change.
@@ -286,7 +293,15 @@ An edited comment is a diff too, a new one is in full.
 ````markdown
 # DEMO-42 · issue unavailable in Jira, no longer tracked
 
-Jira returns 404 for https://jira.example.com/browse/DEMO-42: the issue was deleted, moved to another project, or the service account has no access to it. Its changes are no longer published; to track it again, run `jira-relay add DEMO-42 <@project>` on the service host.
+Jira returns 404 for https://jira.example.com/browse/DEMO-42: the issue was deleted, moved to another project, or none of its watchers has access to it. Its changes are no longer published; to watch it again: `jira watch DEMO-42 <address>`.
+````
+
+### Tracking paused
+
+````markdown
+# DEMO-42 · tracking paused: no working Jira token
+
+Changes of https://jira.example.com/browse/DEMO-42 are not published: Jira no longer accepts the token of any watcher (alice, bob). A watcher registers again with a fresh token (`jira register`), and publishing resumes with the next poll.
 ````
 
 ## Agents → Jira
