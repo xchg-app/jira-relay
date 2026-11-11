@@ -10,6 +10,10 @@ Written for people and agents: what changed in behavior, not which files were to
 - What the human must run themselves (`setup`, `register`, `token set`) is named by the client's full path in
   messages, the skill and README: with a plugin, `jira` is not on the human's `PATH`.
 
+### Fixed
+- The `jira watch` snapshot reaches the hub: since 0.6.0 the gateway service had no git author (`BOT_NAME`,
+  `BOT_EMAIL` were passed to the tracker only), so its commit to the hub failed with "Author identity unknown".
+
 ## [0.6.0] — 2026-11-06
 
 ### Breaking

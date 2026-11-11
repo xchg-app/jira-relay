@@ -92,7 +92,8 @@ tags: [memory/repo, gotcha]
 - **The image has an `/etc/passwd` entry for `APP_UID`**: without it OpenSSH fails with "No user exists for uid".
   If you change `APP_UID`/`APP_GID` in `.env`, rebuild the image; files in an existing volume keep the old owner.
 - **No global `git user.name/email`**: the author of hub commits is set via `GIT_AUTHOR_*` / `GIT_COMMITTER_*` in
-  `compose.yaml` (from `BOT_NAME`, `BOT_EMAIL` in `.env`).
+  `compose.yaml` (from `BOT_NAME`, `BOT_EMAIL` in `.env`), for both services: the gateway commits too (the
+  `jira watch` snapshot). A service without them fails with "Author identity unknown".
 - **Secrets are files in the volume** (`/data/secrets`, 0600, owned by `APP_UID`). They never go into `environment`:
   it would be visible in `docker inspect`.
 - **The volume name comes from `.env`** (`JIRA_RELAY_VOLUME`, default `jira-relay_data`). Changing it, or losing

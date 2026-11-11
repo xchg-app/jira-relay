@@ -18,6 +18,11 @@ x-service: &service
   restart: unless-stopped
   volumes:
     - data:/data
+  environment:  # both services commit to hubs: the tracker publishes changes, the gateway the `jira watch` snapshot
+    GIT_AUTHOR_NAME: ${BOT_NAME:-jira-bot}
+    GIT_AUTHOR_EMAIL: ${BOT_EMAIL:-jira-bot@localhost}
+    GIT_COMMITTER_NAME: ${BOT_NAME:-jira-bot}
+    GIT_COMMITTER_EMAIL: ${BOT_EMAIL:-jira-bot@localhost}
   logging:
     driver: json-file
     options:
@@ -34,11 +39,6 @@ services:
         APP_GID: ${APP_GID:-1000}
         ALPINE_MIRROR: ${ALPINE_MIRROR:-}
     command: ["jira-relay", "run"]
-    environment:
-      GIT_AUTHOR_NAME: ${BOT_NAME:-jira-bot}
-      GIT_AUTHOR_EMAIL: ${BOT_EMAIL:-jira-bot@localhost}
-      GIT_COMMITTER_NAME: ${BOT_NAME:-jira-bot}
-      GIT_COMMITTER_EMAIL: ${BOT_EMAIL:-jira-bot@localhost}
 
   gateway:
     <<: *service
