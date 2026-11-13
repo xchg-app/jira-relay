@@ -6,6 +6,8 @@ Written for people and agents: what changed in behavior, not which files were to
 
 ## [Unreleased]
 
+## [0.6.2] — 2026-11-13
+
 ### Fixed
 - A note the hub did not take is an error, not a success: the image carries xchg 0.16.1 (was 0.9.1), where a
   failed commit to the hub fails `xchg post` and rolls the write back. Before, `jira watch` printed `sent` and

@@ -30,7 +30,7 @@ from urllib.parse import urlsplit
 
 CONFIG = Path(os.environ.get('XDG_CONFIG_HOME', '~/.config')).expanduser() / 'jira-relay' / 'client.conf'
 ME = Path(__file__).resolve()  # the human's terminal has no `jira` on PATH when the client came as a plugin
-VERSION = '0.6.1'  # jira-relay version this client and skill came with; set by bin/release
+VERSION = '0.6.2'  # jira-relay version this client and skill came with; set by bin/release
 TIMEOUT = 180
 
 
