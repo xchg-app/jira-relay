@@ -4,9 +4,10 @@ FROM python:3.12-alpine
 # apk mirror (e.g. a nexus alpine-proxy); empty — the default repositories
 ARG ALPINE_MIRROR=
 # The xchg client is a public repository, pinned to a commit: self-update is off in the container.
-# v0.9.1: attachments (--attach) and attachment names as in the source. The comment is on its own line:
+# v0.16.1: a failed commit to the hub is an error and the write is rolled back (before, "sent" with exit 0).
+# The comment is on its own line:
 # in a Dockerfile, text after an ARG value is not stripped.
-ARG XCHG_REF=9f7760c09977c16d8b10da2ca1cac51671d089ba
+ARG XCHG_REF=089ce5f001fc9448386420af0c9379d32fafde3b
 # uid/gid of the service process and the owner of /data (compose passes APP_UID/APP_GID from .env)
 ARG APP_UID=1000
 ARG APP_GID=1000
